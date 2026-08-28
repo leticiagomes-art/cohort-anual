@@ -14,7 +14,7 @@ Dependências: pandas, openpyxl, numpy
 """
 import sys, os, json, glob, re, unicodedata
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import numpy as np
 
@@ -480,6 +480,17 @@ P = {
               'salvos': 11, 'diasSemana': 7, 'naoCBSystem': 82223.35,
               'retencaoObs': 0.5908},
     'gerado_em': str(DATA_REF.date()),
+    # carimbo mostrado no rodapé do painel: quando o robô rodou e até que
+    # dia o dado alcança. São coisas diferentes — o run das 3h traz o
+    # movimento até o dia anterior.
+    'atualizacao': {
+        'rodou_em':   datetime.now(timezone.utc)
+                        .astimezone(timezone(timedelta(hours=-3)))
+                        .strftime('%d/%m/%Y às %H:%M'),
+        'dado_ate':   DATA_REF.strftime('%d/%m/%Y'),
+        'pedidos':    int(len(ped_a)),
+        'reembolsos': int(len(ref_a)),
+    },
 }
 
 # ── 12. injetar no template ───────────────────────────────────────────────────
