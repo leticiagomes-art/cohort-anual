@@ -17,7 +17,7 @@ MODO DIAGNÓSTICO
 
     DEBUG_DOM=1 BG_EMAIL=... BG_PASSWORD=... python scripts/baixar_exports.py
 """
-import os, sys, json, time
+import os, sys, json, time, re
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -36,6 +36,7 @@ EMAIL     = os.environ.get('BG_EMAIL', '')
 PASSWORD  = os.environ.get('BG_PASSWORD', '')
 DEBUG_DOM = os.environ.get('DEBUG_DOM', '') == '1'
 GRAVAR    = os.environ.get('GRAVAR', '') == '1'      # vídeo + trace
+STORAGE   = ROOT / "entrada" / ".sessao.json"        # cookies salvos
 SO_UMA    = os.environ.get('SO_UMA', '')             # testar 1 conta só
 VIDEO_DIR = ROOT / "diagnostico" / "video"
 TRACE_DIR = ROOT / "diagnostico"
@@ -342,6 +343,104 @@ def abrir_modal(page, n_paginas):
     return False
 
 
+
+def definir_status_all(page):
+    """
+    Troca o filtro de status de "Accepted" para "All" na tela de Orders Items.
+
+    O gatilho não é um <button>: pode ser um <select> nativo ou um dropdown
+    customizado montado com <div>/<span>. Procurar só por 'button, a' devolve
+    "gatilho nao encontrado" — foi o que acontecia antes.
+
+    Sem esse filtro o export sai só com pedidos aceitos e perde os refunded,
+    declined e canceled, que são justamente o que a análise precisa.
+    """
+    # ── caso 1: <select> nativo ─────────────────────────────────────────────
+    via_select = page.evaluate("""
+        () => {
+            for (const sel of document.querySelectorAll('select')) {
+                const opts = [...sel.options].map(o => o.textContent.trim());
+                if (!opts.includes('All')) continue;
+                const alvo = [...sel.options].find(o => o.textContent.trim() === 'All');
+                sel.value = alvo.value;
+                sel.dispatchEvent(new Event('change', {bubbles: true}));
+                sel.dispatchEvent(new Event('input',  {bubbles: true}));
+                return true;
+            }
+            return false;
+        }
+    """)
+    if via_select:
+        page.wait_for_timeout(1_500)
+        log("    Status → All (select nativo) ✓")
+        return True
+
+    # ── caso 2: dropdown customizado ────────────────────────────────────────
+    abriu = page.evaluate("""
+        () => {
+            const visivel = el => el.offsetParent !== null &&
+                                  el.getClientRects().length > 0;
+            // qualquer elemento visível cujo texto seja exatamente "Accepted"
+            const cands = [...document.querySelectorAll('*')].filter(el => {
+                if (el.children.length > 2) return false;      // evita containers
+                const t = (el.textContent || '').trim();
+                return t === 'Accepted' && visivel(el);
+            });
+            if (!cands.length) return null;
+            // clicar no elemento clicável mais próximo
+            const el = cands[0];
+            const clicavel = el.closest('button, a, [role=button], .dropdown-toggle, select') || el;
+            clicavel.scrollIntoView({block: 'center'});
+            clicavel.click();
+            return clicavel.tagName + '.' + (clicavel.className || '').toString().slice(0, 30);
+        }
+    """)
+    if not abriu:
+        log("    ⚠ gatilho 'Accepted' não encontrado")
+        dump_dom(page, "filtro de status")
+        return False
+
+    page.wait_for_timeout(800)
+
+    escolheu = page.evaluate("""
+        () => {
+            const visivel = el => el.offsetParent !== null &&
+                                  el.getClientRects().length > 0;
+            // "All" dentro do menu que acabou de abrir — precisa ser visível,
+            // senão pega o botão "All" do seletor de Colunas, que fica oculto
+            const opts = [...document.querySelectorAll(
+                '.dropdown-menu *, .dropdown-item, li, [role=option], option, a, button')];
+            const alvo = opts.find(o =>
+                (o.textContent || '').trim() === 'All' && visivel(o));
+            if (!alvo) return false;
+            alvo.click();
+            return true;
+        }
+    """)
+    page.wait_for_timeout(1_800)
+
+    if not escolheu:
+        log("    ⚠ opção 'All' não encontrada no menu aberto")
+        dump_dom(page, "menu de status aberto")
+        return False
+
+    # ── confirmar que realmente mudou ───────────────────────────────────────
+    agora = page.evaluate("""
+        () => {
+            const visivel = el => el.offsetParent !== null &&
+                                  el.getClientRects().length > 0;
+            const el = [...document.querySelectorAll('*')].find(e =>
+                e.children.length <= 2 &&
+                ['All', 'Accepted'].includes((e.textContent || '').trim()) &&
+                visivel(e));
+            return el ? (el.textContent || '').trim() : '?';
+        }
+    """)
+    ok = (agora == 'All')
+    log(f"    Status → All: {ok} (gatilho agora mostra {agora!r}) [{abriu}]")
+    return ok
+
+
 # ── caminho A: criar export do zero ───────────────────────────────────────────
 def criar_do_zero(page, account_id, tipo):
     url = f"{BASE}/{account_id}/{tipo['url']}"
@@ -367,34 +466,9 @@ def criar_do_zero(page, account_id, tipo):
             dump_dom(page, "tabela invisivel")
 
         if tipo["sufixo"] == "orders":
-            trocou = page.evaluate("""
-                () => {
-                    // o filtro de status é um dropdown cujo gatilho mostra "Accepted"
-                    const trig = [...document.querySelectorAll('button, a, .dropdown-toggle')]
-                        .find(e => (e.textContent || '').trim().startsWith('Accepted'));
-                    if (!trig) return 'gatilho nao encontrado';
-                    trig.click();
-                    return 'aberto';
-                }
-            """)
-            page.wait_for_timeout(700)
-            escolheu = page.evaluate("""
-                () => {
-                    // "All" do filtro de status — precisa ser o VISÍVEL, senão
-                    // pega o botão "All" do seletor de Colunas, que fica oculto
-                    const visivel = el => el.offsetParent !== null &&
-                                          el.getClientRects().length > 0;
-                    const opts = [...document.querySelectorAll(
-                        '.dropdown-menu a, .dropdown-item, li a, [role=option], option')];
-                    const cands = opts.filter(o => (o.textContent || '').trim() === 'All');
-                    const alvo = cands.find(visivel);
-                    if (!alvo) return false;
-                    alvo.click();
-                    return true;
-                }
-            """)
-            page.wait_for_timeout(1_200)
-            log(f"    Status → All: {escolheu} ({trocou})")
+            if not definir_status_all(page):
+                log("    ⚠ seguindo mesmo assim — export pode vir só com Accepted")
+            page.wait_for_timeout(1_000)
 
         return abrir_modal(page, tipo["n_paginas"])
     except Exception as e:
@@ -412,25 +486,34 @@ def rodar_agendado(page, account_id, tipo):
         page.wait_for_timeout(1_200)
 
         # marcar o checkbox da linha certa via JS
-        marcou = page.evaluate("""
-            (args) => {
-                const [nome, sufixo] = args;
-                const rows = [...document.querySelectorAll('table tbody tr')];
-                for (const row of rows) {
-                    const txt = row.innerText.toLowerCase();
-                    if (!txt.includes(nome.toLowerCase()) && !txt.includes(sufixo)) continue;
-                    if (txt.includes('all')) continue;          // esse vai pelo caminho A
-                    const cb = row.querySelector('input[type=checkbox]');
-                    if (cb) {
-                        cb.checked = true;
-                        cb.dispatchEvent(new Event('change', {bubbles: true}));
-                        cb.dispatchEvent(new Event('click',  {bubbles: true}));
+        # casar pela PALAVRA-CHAVE, não pelo nome completo: o template muda de
+        # nome entre contas ('Order Items' vs 'Orders Items', 'Customers
+        # Refunds' vs 'Customer Refunds'). E as linhas não renderizam todas
+        # juntas, então tentamos algumas vezes antes de desistir.
+        padrao = KEYWORDS.get(tipo["sufixo"], tipo["sufixo"])
+        marcou = False
+        for _ in range(8):
+            marcou = page.evaluate("""
+                (args) => {
+                    const [prefixo, padraoStr] = args;
+                    const re_ = new RegExp(padraoStr, 'i');
+                    const caixas = [...document.querySelectorAll(`input[id^="${prefixo}"]`)];
+                    for (const cx of caixas) {
+                        const tr = cx.closest('tr');
+                        const txt = tr ? tr.innerText : '';
+                        if (!re_.test(txt)) continue;
+                        if (/\ball\b/i.test(txt)) continue;
+                        cx.checked = true;
+                        cx.dispatchEvent(new Event('change', {bubbles: true}));
+                        cx.dispatchEvent(new Event('click',  {bubbles: true}));
                         return true;
                     }
+                    return false;
                 }
-                return false;
-            }
-        """, [tipo["nome"], tipo["sufixo"]])
+            """, [CAIXA_JOB, padrao])
+            if marcou:
+                break
+            page.wait_for_timeout(600)
 
         if not marcou:
             log("    Nenhuma linha correspondente para marcar")
@@ -453,43 +536,118 @@ def rodar_agendado(page, account_id, tipo):
         return False
 
 
-# ── aguardar e baixar ─────────────────────────────────────────────────────────
+# ── aguardar e baixar ──────────────────────────────────────────────────────
+
+# IDs das caixas de seleção das duas tabelas — é por elas que identificamos
+# as LINHAS de verdade. Buscar link por texto na página inteira acha link de
+# menu que contém a mesma palavra ("refund", "chargeback") e nunca dispara
+# download: o script fica repetindo a mesma tentativa inútil por minutos.
+CAIXA_JOB      = 'dashboard-jobs-table-v2-check-id'
+CAIXA_DOWNLOAD = 'dashboard-exports-table-v2-check-id'
+
+# palavra-chave por tipo — o nome do template varia entre contas
+# ('Order Items' vs 'Orders Items', 'Customers Refunds' vs 'Customer Refunds',
+# 'Customers Chargebacks' vs só 'Chargebacks')
+KEYWORDS = {
+    'orders':      r'items?',
+    'refunds':     r'refunds?',
+    'chargebacks': r'chargebacks?',
+}
+
+TAMANHO_MINIMO = 80   # bytes — abaixo disso veio vazio/cortado
+
+
+def _linhas_com_caixa(page, prefixo_id):
+    """[(id_da_caixa, texto_da_linha)] da tabela indicada."""
+    return page.evaluate("""
+        (prefixo) => [...document.querySelectorAll(`input[id^="${prefixo}"]`)]
+            .map(cx => {
+                const tr = cx.closest('tr');
+                return [cx.id || '', (tr ? tr.innerText : '').trim()];
+            })
+    """, prefixo_id)
+
+
+def _link_de_download(page, sufixo):
+    """
+    Acha o <a> de download DENTRO da linha da tabela de Export Downloads.
+    Devolve o id da caixa da linha, ou None se ainda não estiver pronto.
+    """
+    padrao = re.compile(KEYWORDS.get(sufixo, sufixo), re.I)
+    for cid, texto in _linhas_com_caixa(page, CAIXA_DOWNLOAD):
+        if not padrao.search(texto):
+            continue
+        tem_link = page.evaluate("""
+            (cid) => {
+                const cx = document.getElementById(cid);
+                const tr = cx && cx.closest('tr');
+                return !!(tr && tr.querySelector('a'));
+            }
+        """, cid)
+        if tem_link:
+            return cid
+    return None
+
+
 def aguardar_e_baixar(page, account_id, nome_conta, tipo, timeout_s=300):
+    """
+    Aguarda o arquivo aparecer em Export Downloads e baixa.
+
+    Três coisas que o script anterior errava e que causavam a espera infinita:
+      1. procurava o link por texto na página toda (achava link de menu)
+      2. não capturava o POPUP que a BuyGoods abre para disparar o download
+      3. forçava extensão .xlsx em vez de usar o nome sugerido pelo download
+    """
+    sufixo   = tipo["sufixo"]
     deadline = time.time() + timeout_s
+
     while time.time() < deadline:
         page.goto(f"{BASE}/{account_id}#exports", wait_until="networkidle", timeout=20_000)
-        page.wait_for_timeout(2_000)
+        page.wait_for_timeout(1_500)
         click_text(page, "Export Downloads")
         page.wait_for_timeout(1_200)
 
-        for row in page.locator("table tbody tr").all()[:10]:
-            txt = row.inner_text().lower()
-            if not any(k in txt for k in tipo["keywords"]):
-                continue
-            link = row.locator(
-                "a[href*='download'], a[download], a:has-text('Download'), "
-                "a[href*='.xlsx'], a[href*='.csv']"
-            ).first
-            if not link.count():
-                break
+        cid = _link_de_download(page, sufixo)
+        if cid:
+            link = page.locator(f"#{cid}").locator("xpath=ancestor::tr").locator("a").first
+            popup = None
             try:
-                with page.expect_download(timeout=90_000) as dl_info:
-                    link.evaluate("el => el.click()")
-                dl   = dl_info.value
-                dest = ENTRADA / f"{nome_conta}_{tipo['sufixo']}_{DATA_FIM.strftime(FMT_FILE)}.xlsx"
+                with page.expect_download(timeout=60_000) as dl_info:
+                    try:
+                        # o clique costuma abrir um popup que dispara o download
+                        with page.expect_popup(timeout=15_000) as pop:
+                            link.click(timeout=10_000)
+                        popup = pop.value
+                    except Exception:
+                        pass   # alguns downloads vêm direto, sem popup
+                dl = dl_info.value
+
+                sugerido = Path(dl.suggested_filename or "")
+                ext  = sugerido.suffix.lower() or ".xlsx"
+                dest = ENTRADA / f"{nome_conta}_{sufixo}_{DATA_FIM.strftime(FMT_FILE)}{ext}"
                 if dest.exists():
                     dest.unlink()
-                dl.save_as(dest)
-                log(f"    ✓ {dest.name}")
+                dl.save_as(str(dest))
+
+                if popup:
+                    try: popup.close()
+                    except Exception: pass
+
+                tam = dest.stat().st_size
+                if tam < TAMANHO_MINIMO:
+                    log(f"    ⚠ {dest.name} veio com {tam} bytes — provavelmente incompleto")
+                else:
+                    log(f"    ✓ {dest.name} ({tam // 1024} KB)")
                 return dest
+
             except Exception as e:
                 log(f"    Erro no download: {e}")
                 return None
 
-        log(f"    Aguardando processamento... ({int(deadline - time.time())}s)")
-        time.sleep(12)
+        log(f"    Export ainda não listado ({int(deadline - time.time())}s restantes)")
+        time.sleep(10)
 
-    log(f"    ✗ Timeout aguardando {tipo['sufixo']}")
+    log(f"    ✗ Timeout — {sufixo} não apareceu em Export Downloads")
     return None
 
 
@@ -519,6 +677,9 @@ def main():
             VIDEO_DIR.mkdir(parents=True, exist_ok=True)
             ctx_args["record_video_dir"]  = str(VIDEO_DIR)
             ctx_args["record_video_size"] = {"width": 1280, "height": 720}
+        # sessão salva: evita refazer login e reduz muito o tempo total
+        if STORAGE.exists():
+            ctx_args["storage_state"] = str(STORAGE)
         ctx = browser.new_context(**ctx_args)
 
         if GRAVAR:
@@ -528,7 +689,17 @@ def main():
         page = ctx.new_page()
         page.set_default_timeout(30_000)
 
-        login(page)
+        # se a sessão salva ainda vale, pula o login
+        page.goto(f"{BASE}/10495#default", wait_until="networkidle", timeout=20_000)
+        if "/login" in page.url:
+            login(page)
+            try:
+                ctx.storage_state(path=str(STORAGE))
+                log("  Sessão salva para as próximas execuções")
+            except Exception:
+                pass
+        else:
+            log("→ Sessão reaproveitada (sem novo login)")
 
         itens = list(CONTAS.items())
         if SO_UMA:
