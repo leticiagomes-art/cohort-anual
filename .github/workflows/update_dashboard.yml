@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 9 * * *'   # 09:00 UTC = 06:00 BRT
   workflow_dispatch:
+    inputs:
+      debug_dom:
+        description: 'Despejar HTML dos botões quando falhar (1 = sim)'
+        required: false
+        default: '0'
 
 permissions:
   contents: write
@@ -37,6 +42,8 @@ jobs:
           BG_EMAIL:    ${{ secrets.BG_EMAIL }}
           BG_PASSWORD: ${{ secrets.BG_PASSWORD }}
           BG_ACCOUNTS: ${{ secrets.BG_ACCOUNTS }}
+          # ligue o diagnóstico rodando o workflow manualmente com DEBUG_DOM=1
+          DEBUG_DOM:   ${{ github.event.inputs.debug_dom || '0' }}
         run: python scripts/baixar_exports.py
 
       # ── 2. processar os xlsx novos → salvar em data/new/ ──────────────────
