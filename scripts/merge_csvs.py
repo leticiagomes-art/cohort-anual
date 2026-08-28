@@ -42,12 +42,23 @@ for nome, chave_dedup in BASES.items():
     novo = pd.read_csv(csv_novo, low_memory=False)
     log(f"{nome}: {len(novo)} linhas novas")
 
-    if csv_acum.exists():
-        acum = pd.read_csv(csv_acum, low_memory=False)
-        log(f"{nome}: {len(acum)} linhas acumuladas")
+    # o CSV acumulado pode existir mas estar vazio (ex.: criado em branco no
+    # GitHub). Ler direto quebra com EmptyDataError e derruba o workflow.
+    acum = None
+    if csv_acum.exists() and csv_acum.stat().st_size > 10:
+        try:
+            acum = pd.read_csv(csv_acum, low_memory=False)
+            log(f"{nome}: {len(acum)} linhas acumuladas")
+        except pd.errors.EmptyDataError:
+            log(f"{nome}: histórico existe mas está vazio — ignorando")
+        except Exception as e:
+            log(f"{nome}: não consegui ler o histórico ({e}) — ignorando")
+    else:
+        log(f"{nome}: sem histórico utilizável")
+
+    if acum is not None and len(acum):
         combined = pd.concat([acum, novo], ignore_index=True)
     else:
-        log(f"{nome}: sem histórico anterior — usando só os novos")
         combined = novo
 
     # deduplicar — manter a linha mais recente de cada order_id
