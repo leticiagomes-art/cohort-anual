@@ -67,7 +67,7 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add public/index.html data/base_*.csv.gz
+          git add index.html data/pedidos data/reembolsos data/chargebacks
           git diff --staged --quiet || \
             git commit -m "Dashboard $(date -u '+%d/%m/%Y %H:%M') UTC" && \
             git push
