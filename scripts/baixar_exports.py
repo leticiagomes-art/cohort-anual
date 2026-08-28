@@ -35,6 +35,10 @@ ENTRADA.mkdir(exist_ok=True)
 EMAIL     = os.environ.get('BG_EMAIL', '')
 PASSWORD  = os.environ.get('BG_PASSWORD', '')
 DEBUG_DOM = os.environ.get('DEBUG_DOM', '') == '1'
+GRAVAR    = os.environ.get('GRAVAR', '') == '1'      # vídeo + trace
+SO_UMA    = os.environ.get('SO_UMA', '')             # testar 1 conta só
+VIDEO_DIR = ROOT / "diagnostico" / "video"
+TRACE_DIR = ROOT / "diagnostico"
 
 _env = os.environ.get('BG_ACCOUNTS', '')
 if _env:
@@ -69,17 +73,27 @@ def log(m): print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] {m}", flush=True)
 # ── helpers de clique robusto ─────────────────────────────────────────────────
 JS_CLICK_BY_TEXT = """
 (texts) => {
+    // A BuyGoods duplica a barra de ações no DOM (layout responsivo): existe
+    // uma cópia dentro de .d-none e outra visível. Clicar na oculta não
+    // dispara handler nenhum, então o elemento VISÍVEL tem prioridade.
     const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const visivel = el => el.offsetParent !== null &&
+                          el.getClientRects().length > 0;
     const wanted = texts.map(norm);
     const sel = 'button, a, input[type=submit], input[type=button], [role=button], .btn';
     const els = [...document.querySelectorAll(sel)];
-    for (const el of els) {
-        const t = norm(el.textContent) || norm(el.value) || norm(el.getAttribute('aria-label'));
-        if (wanted.some(w => t === w || t.includes(w))) {
-            el.scrollIntoView({block: 'center'});
-            el.click();
-            return t;
-        }
+    const casa = el => {
+        const t = norm(el.textContent) || norm(el.value) ||
+                  norm(el.getAttribute('aria-label'));
+        return wanted.some(w => t === w || t.includes(w)) ? t : null;
+    };
+    for (const el of els) {                       // 1ª passada: só visíveis
+        const t = casa(el);
+        if (t && visivel(el)) { el.scrollIntoView({block:'center'}); el.click(); return t; }
+    }
+    for (const el of els) {                       // 2ª passada: qualquer um
+        const t = casa(el);
+        if (t) { el.scrollIntoView({block:'center'}); el.click(); return t + ' (oculto)'; }
     }
     return null;
 }
@@ -87,11 +101,13 @@ JS_CLICK_BY_TEXT = """
 
 JS_CLICK_BY_ATTR = """
 (selector) => {
-    const el = document.querySelector(selector);
-    if (!el) return false;
-    el.scrollIntoView({block: 'center'});
-    el.click();
-    return true;
+    const visivel = el => el.offsetParent !== null && el.getClientRects().length > 0;
+    const els = [...document.querySelectorAll(selector)];
+    if (!els.length) return false;
+    const alvo = els.find(visivel) || els[0];
+    alvo.scrollIntoView({block: 'center'});
+    alvo.click();
+    return visivel(alvo) ? 'visivel' : 'oculto';
 }
 """
 
@@ -300,7 +316,8 @@ def preencher_modal(page, n_paginas):
 def abrir_modal(page, n_paginas):
     """Abre o modal de export tentando várias estratégias."""
     estrategias = [
-        ("attr a[action=export]", lambda: page.evaluate(JS_CLICK_BY_ATTR, "a[action='export']")),
+        ("a[action=export] visível",
+         lambda: page.evaluate(JS_CLICK_BY_ATTR, "a[action='export'], [action='export']")),
         ("texto Export",          lambda: click_text(page, "Export")),
         ("dropdown + Export",     lambda: (
             page.evaluate(JS_CLICK_BY_ATTR,
@@ -334,6 +351,21 @@ def criar_do_zero(page, account_id, tipo):
         page.wait_for_timeout(1_800)
         ativar_aba(page, tipo["url"])
 
+        # a tabela é montada por AJAX; enquanto não termina, o container fica
+        # com d-none e nenhum clique dentro dele funciona
+        try:
+            page.wait_for_function("""
+                () => {
+                    const linhas = document.querySelectorAll('table tbody tr');
+                    if (!linhas.length) return false;
+                    return [...linhas].some(l => l.offsetParent !== null);
+                }
+            """, timeout=20_000)
+            log("    Tabela renderizada e visível ✓")
+        except PWTimeout:
+            log("    ⚠ Tabela não ficou visível em 20s")
+            dump_dom(page, "tabela invisivel")
+
         if tipo["sufixo"] == "orders":
             trocou = page.evaluate("""
                 () => {
@@ -348,10 +380,14 @@ def criar_do_zero(page, account_id, tipo):
             page.wait_for_timeout(700)
             escolheu = page.evaluate("""
                 () => {
-                    // opção "All" dentro do menu aberto
+                    // "All" do filtro de status — precisa ser o VISÍVEL, senão
+                    // pega o botão "All" do seletor de Colunas, que fica oculto
+                    const visivel = el => el.offsetParent !== null &&
+                                          el.getClientRects().length > 0;
                     const opts = [...document.querySelectorAll(
-                        '.dropdown-menu a, .dropdown-item, li, [role=option], option')];
-                    const alvo = opts.find(o => (o.textContent || '').trim() === 'All');
+                        '.dropdown-menu a, .dropdown-item, li a, [role=option], option')];
+                    const cands = opts.filter(o => (o.textContent || '').trim() === 'All');
+                    const alvo = cands.find(visivel);
                     if (!alvo) return false;
                     alvo.click();
                     return true;
@@ -466,7 +502,7 @@ def main():
     log(f"BuyGoods | {DATA_INI.strftime(FMT_FILE)} → {DATA_FIM.strftime(FMT_FILE)} | "
         f"{len(CONTAS)} contas | DEBUG_DOM={DEBUG_DOM}")
 
-    ok, erro = [], []
+    ok, erro, pendentes = [], [], []
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -475,14 +511,31 @@ def main():
         )
         # viewport grande: a BuyGoods esconde a barra de ações em telas estreitas,
         # que é o motivo de vários botões aparecerem como "not visible"
-        ctx  = browser.new_context(accept_downloads=True,
-                                   viewport={"width": 1920, "height": 1080})
+        ctx_args = {
+            "accept_downloads": True,
+            "viewport": {"width": 1920, "height": 1080},
+        }
+        if GRAVAR:
+            VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+            ctx_args["record_video_dir"]  = str(VIDEO_DIR)
+            ctx_args["record_video_size"] = {"width": 1280, "height": 720}
+        ctx = browser.new_context(**ctx_args)
+
+        if GRAVAR:
+            # trace = timeline navegável com screenshot e DOM de cada passo
+            ctx.tracing.start(screenshots=True, snapshots=True, sources=True)
+
         page = ctx.new_page()
         page.set_default_timeout(30_000)
 
         login(page)
 
-        for nome_conta, account_id in CONTAS.items():
+        itens = list(CONTAS.items())
+        if SO_UMA:
+            itens = [(k, v) for k, v in itens if k.lower() == SO_UMA.lower()] or itens[:1]
+            log(f"  MODO DIAGNÓSTICO: só a conta {itens[0][0]}")
+
+        for nome_conta, account_id in itens:
             log(f"\n── {nome_conta} (id={account_id}) ──")
             sched = ler_scheduled(page, account_id)
 
@@ -493,18 +546,37 @@ def main():
                     disparou = rodar_agendado(page, account_id, tipo)
                 else:
                     disparou = criar_do_zero(page, account_id, tipo)
+                    if not disparou:
+                        pendentes.append(f"{nome_conta}/{tipo['sufixo']} (date_range={dr})")
 
                 dest = aguardar_e_baixar(page, account_id, nome_conta, tipo) if disparou else None
                 (ok if dest else erro).append(f"{nome_conta}/{tipo['sufixo']}")
 
+        if GRAVAR:
+            TRACE_DIR.mkdir(parents=True, exist_ok=True)
+            trace_path = TRACE_DIR / "trace.zip"
+            ctx.tracing.stop(path=str(trace_path))
+            log(f"  Trace salvo em {trace_path}")
+
+        ctx.close()          # necessário para o vídeo ser finalizado
         browser.close()
 
-    log(f"\n✓ {len(ok)} OK | {len(erro)} erro(s)")
+        if GRAVAR:
+            vids = list(VIDEO_DIR.glob("*.webm"))
+            log(f"  {len(vids)} vídeo(s) em {VIDEO_DIR}")
+
+    log(f"\n✓ {len(ok)} baixados | {len(erro)} falha(s) | {len(pendentes)} pendente(s) de ajuste")
     if erro:
         log(f"  Falhas: {erro[:20]}{' ...' if len(erro) > 20 else ''}")
+    if pendentes:
+        log("\n  ─── AJUSTE ESTES AGENDAMENTOS UMA ÚNICA VEZ NA BUYGOODS ───")
+        log("  Scheduled Export Jobs → editar o job → Date Range = Last 60 Days")
+        for p in pendentes:
+            log(f"    • {p}")
 
     (ENTRADA / f"log_{DATA_FIM.strftime(FMT_FILE)}.json").write_text(
-        json.dumps({"ok": ok, "erro": erro}, indent=2, ensure_ascii=False))
+        json.dumps({"ok": ok, "erro": erro, "pendentes_ajuste_manual": pendentes},
+                   indent=2, ensure_ascii=False))
 
     sys.exit(0 if ok else 1)
 
