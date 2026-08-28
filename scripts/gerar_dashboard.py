@@ -61,9 +61,9 @@ BW = {
 
 # ── 1. carregar CSVs ──────────────────────────────────────────────────────────
 print("→ Carregando CSVs...")
-ped = pd.read_csv(DATA_DIR / "base_pedidos.csv",     low_memory=False)
-ref = pd.read_csv(DATA_DIR / "base_reembolsos.csv",  low_memory=False)
-cb  = pd.read_csv(DATA_DIR / "base_chargebacks.csv", low_memory=False)
+ped = pd.read_csv(DATA_DIR / "base_pedidos.csv.gz",     low_memory=False)
+ref = pd.read_csv(DATA_DIR / "base_reembolsos.csv.gz",  low_memory=False)
+cb  = pd.read_csv(DATA_DIR / "base_chargebacks.csv.gz", low_memory=False)
 
 for d in (ped, ref, cb):
     d['data_pedido'] = pd.to_datetime(d['data_pedido'], errors='coerce')

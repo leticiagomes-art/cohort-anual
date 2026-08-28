@@ -32,7 +32,9 @@ def log(msg): print(f"[merge] {msg}")
 total_novos = 0
 
 for nome, chave_dedup in BASES.items():
-    csv_acum = DATA_DIR / f"{nome}.csv"
+    # o histórico fica compactado (.csv.gz) para caber no GitHub;
+    # o pandas lê e escreve gzip de forma transparente pela extensão
+    csv_acum = DATA_DIR / f"{nome}.csv.gz"
     csv_novo = NEW_DIR   / f"{nome}.csv"
 
     if not csv_novo.exists():
@@ -84,7 +86,7 @@ for nome, chave_dedup in BASES.items():
     log(f"{nome}: {duplicatas} duplicatas removidas → {depois} linhas finais")
 
     # salvar de volta no acumulado
-    combined.to_csv(csv_acum, index=False)
+    combined.to_csv(csv_acum, index=False, compression='gzip')
     log(f"{nome}: salvo em {csv_acum}")
     total_novos += len(novo)
 
