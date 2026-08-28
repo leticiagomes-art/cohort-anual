@@ -35,7 +35,7 @@ PASSWORD = os.environ.get('BG_PASSWORD', '')
 
 _env = os.environ.get('BG_ACCOUNTS', '')
 if _env:
-    CONTAS: dict[str, int] = {k: v for k, v in json.loads(_env).items() if v}
+    CONTAS: dict[str, int] = {k: v for k, v in json.loads(_env).items() if v and not str(k).startswith('_')}
 else:
     _f = ROOT / "scripts" / "accounts.json"
     if _f.exists():
@@ -122,6 +122,69 @@ def ler_scheduled_jobs(page, account_id):
 
 
 # ── selecionar todas as colunas no modal e criar export ───────────────────────
+
+def abrir_modal_export(page, n_paginas):
+    """
+    O botão Export na BuyGoods é um <a action="export"> dentro de um dropdown.
+    Estratégia:
+    1. Tentar clicar direto via JavaScript (ignora hidden)
+    2. Se não abrir o modal, tentar abrir o dropdown primeiro
+    """
+    # Tentativa 1: clicar via JS (ignora visibilidade)
+    clicou = page.evaluate("""
+        () => {
+            // procura <a action="export"> ou qualquer elemento com texto Export
+            const candidates = [
+                ...document.querySelectorAll('a[action="export"]'),
+                ...document.querySelectorAll('[class*="export"]:not([class*="exports"])'),
+                ...[...document.querySelectorAll('a,button')].filter(
+                    el => el.textContent.trim().toLowerCase() === 'export'
+                )
+            ];
+            for (const el of candidates) {
+                if (el.offsetParent !== null || true) {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }
+    """)
+    page.wait_for_timeout(1_200)
+
+    # verificar se o modal abriu
+    if page.locator("text=Available Columns").first.is_visible():
+        log("    Modal aberto via JS click ✓")
+        return criar_export_modal(page, n_paginas)
+
+    # Tentativa 2: abrir dropdown primeiro
+    log("    Tentando via dropdown...")
+    dropdown_btn = page.locator(
+        "button.dropdown-toggle, "
+        "[data-toggle='dropdown'], "
+        "[data-bs-toggle='dropdown']"
+    ).first
+    if dropdown_btn.count():
+        dropdown_btn.click()
+        page.wait_for_timeout(600)
+
+    # agora clicar no item Export dentro do dropdown aberto
+    export_item = page.locator(
+        "a[action='export'], "
+        ".dropdown-menu a:has-text('Export'), "
+        ".dropdown-item:has-text('Export')"
+    ).first
+    if export_item.count():
+        export_item.evaluate("el => el.click()")
+        page.wait_for_timeout(1_200)
+
+    if page.locator("text=Available Columns").first.is_visible():
+        log("    Modal aberto via dropdown ✓")
+        return criar_export_modal(page, n_paginas)
+
+    log("    Modal não abriu")
+    return False
+
 def criar_export_modal(page, n_paginas):
     """
     Dentro do modal de Export:
@@ -140,15 +203,16 @@ def criar_export_modal(page, n_paginas):
         log(f"    Página {pagina}/{n_paginas}...")
 
         # selecionar todos os checkboxes não marcados (Available Columns)
-        checkboxes = page.locator("input[type='checkbox']:not(:checked)").all()
-        for cb in checkboxes:
-            try:
-                cb.check()
-            except Exception:
-                try:
-                    cb.click()
-                except Exception:
-                    pass
+        # checkboxes podem estar hidden — usar JS click que ignora visibilidade
+        page.evaluate("""
+            () => {
+                document.querySelectorAll('input[type=\'checkbox\']:not(:checked)').forEach(cb => {
+                    cb.checked = true;
+                    cb.dispatchEvent(new Event('change', { bubbles: true }));
+                    cb.dispatchEvent(new Event('input', { bubbles: true }));
+                });
+            }
+        """)
         page.wait_for_timeout(300)
 
         # clicar Add Selected
@@ -217,13 +281,11 @@ def criar_export_zero(page, account_id, tipo):
                     page.wait_for_timeout(600)
                     log("    Status filtro: All ✓")
 
-        # abrir modal de export
-        export_btn = page.locator("button:has-text('Export'), a:has-text('Export')").first
-        export_btn.wait_for(state="visible", timeout=8_000)
-        export_btn.click()
-        page.wait_for_timeout(1_000)
-
-        return criar_export_modal(page, tipo["n_paginas"])
+        # o botão Export fica dentro de um dropdown — clicar para abrir
+        ok = abrir_modal_export(page, tipo["n_paginas"])
+        if not ok:
+            return False
+        return True
 
     except Exception as e:
         log(f"    Erro: {e}")
@@ -258,7 +320,8 @@ def rodar_scheduled_job(page, account_id, tipo):
                     continue  # pula — esse deveria estar no caminho A
                 cb = row.locator("input[type='checkbox']").first
                 if cb.count():
-                    cb.check()
+                    # checkbox pode estar hidden — usar JS
+                    cb.evaluate("el => { el.checked = true; el.dispatchEvent(new Event('change', {bubbles:true})); }")
                     marcou = True
                     log(f"    Job selecionado ✓")
                     break
@@ -267,7 +330,7 @@ def rodar_scheduled_job(page, account_id, tipo):
             log(f"    Job 'Last 60 Days' não encontrado — tentando Run Selected na primeira linha")
             primeiro_cb = page.locator("table tbody tr").first.locator("input[type='checkbox']").first
             if primeiro_cb.count():
-                primeiro_cb.check()
+                primeiro_cb.evaluate("el => { el.checked = true; el.dispatchEvent(new Event('change', {bubbles:true})); }")
                 marcou = True
 
         if not marcou:
@@ -361,11 +424,11 @@ def processar_conta(page, nome_conta, account_id):
         log(f"\n  {nome_tipo}: date_range={date_range!r}")
 
         # decidir o caminho
-        if date_range and "60" in date_range:
-            # Caminho B: job agendado com Last 60 Days → Run Selected
+        if date_range and "60" in date_range.lower():
+            # Caminho B: Last 60 Days → Run Selected
             ok = rodar_scheduled_job(page, account_id, tipo)
         else:
-            # Caminho A: "All" ou não encontrado → criar export do zero
+            # Caminho A: "All", data fixa antiga, ou não encontrado → criar do zero
             ok = criar_export_zero(page, account_id, tipo)
 
         if not ok:
