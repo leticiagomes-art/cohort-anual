@@ -61,11 +61,11 @@ BASE     = "https://admin.buygoods.com"
 
 TIPOS = [
     {"nome": "Order Items",           "sufixo": "orders",      "n_paginas": 9,
-     "url": "orders#orders-items",       "keywords": ["order item"]},
+     "hash": "orders-items",       "keywords": ["order item"]},
     {"nome": "Customers Refunds",     "sufixo": "refunds",     "n_paginas": 7,
-     "url": "customers#refunds",         "keywords": ["customer refund", "refund"]},
+     "hash": "customers-refunds",         "keywords": ["customer refund", "refund"]},
     {"nome": "Customers Chargebacks", "sufixo": "chargebacks", "n_paginas": 7,
-     "url": "customers#chargebacks",     "keywords": ["customer chargeback", "chargeback"]},
+     "hash": "customers-chargebacks",     "keywords": ["customer chargeback", "chargeback"]},
 ]
 
 def log(m): print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] {m}", flush=True)
@@ -185,12 +185,16 @@ JS_ATIVAR_ABA = """
 """
 
 
-def ativar_aba(page, url_secao):
-    """Ativa a aba correspondente ao hash da URL e espera o painel aparecer."""
-    if '#' not in url_secao:
-        return
-    hash_ = '#' + url_secao.split('#', 1)[1]
-    for tentativa in range(3):
+def ativar_aba(page, hash_alvo):
+    """
+    Ativa a aba do hash e espera o painel aparecer.
+
+    A navegação é sempre admin.buygoods.com/{account_id}#{hash} — o hash
+    fica na raiz da conta, sem segmento de caminho. Se o painel não for
+    ativado, ele fica com display:none e nenhum clique dentro dele
+    dispara handler.
+    """
+    for hash_ in [f'#{hash_alvo}']:
         via = page.evaluate(JS_ATIVAR_ABA, hash_)
         page.wait_for_timeout(1_200)
         # confirmar que algo do painel ficou visível
@@ -201,9 +205,9 @@ def ativar_aba(page, url_secao):
             }
         """)
         if visivel:
-            log(f"    Aba ativada via {via} ✓")
+            log(f"    Aba ativada via {via} ({hash_}) ✓")
             return
-    log("    Aviso: painel da aba continua oculto")
+    log(f"    Aviso: painel #{hash_alvo} continua oculto")
 
 
 # ── login ─────────────────────────────────────────────────────────────────────
@@ -510,12 +514,12 @@ def definir_status_all_retry(page, tentativas=3):
 
 # ── caminho A: criar export do zero ───────────────────────────────────────────
 def criar_do_zero(page, account_id, tipo):
-    url = f"{BASE}/{account_id}/{tipo['url']}"
-    log(f"  [criar do zero] {tipo['nome']}")
+    url = f"{BASE}/{account_id}#{tipo['hash']}"
+    log(f"  [criar do zero] {tipo['nome']} → {url}")
     try:
         page.goto(url, wait_until="networkidle", timeout=20_000)
         page.wait_for_timeout(1_800)
-        ativar_aba(page, tipo["url"])
+        ativar_aba(page, tipo["hash"])
 
         # a tabela é montada por AJAX; enquanto não termina, o container fica
         # com d-none e nenhum clique dentro dele funciona
