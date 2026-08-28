@@ -97,15 +97,25 @@ JS_CLICK_BY_ATTR = """
 
 JS_DUMP = """
 () => {
+    const hiddenAncestor = el => {
+        let n = el;
+        while (n && n !== document.body) {
+            const st = getComputedStyle(n);
+            if (st.display === 'none' || st.visibility === 'hidden')
+                return (n.className || n.tagName).toString().slice(0, 50);
+            n = n.parentElement;
+        }
+        return '';
+    };
     const sel = 'button, a, input[type=submit], [role=button], .btn';
-    return [...document.querySelectorAll(sel)].slice(0, 60).map(el => ({
+    return [...document.querySelectorAll(sel)].map(el => ({
         tag: el.tagName,
-        text: (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40),
-        cls: (el.className || '').toString().slice(0, 60),
-        id: el.id || '',
-        attrs: [...el.attributes].map(a => a.name + '=' + a.value).join(' ').slice(0, 80),
-        visible: el.offsetParent !== null
-    })).filter(o => o.text || o.attrs.includes('export'));
+        text: (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 34),
+        cls: (el.className || '').toString().slice(0, 40),
+        attrs: [...el.attributes].map(a => a.name + '=' + a.value).join(' ').slice(0, 60),
+        visible: el.offsetParent !== null,
+        hiddenBy: hiddenAncestor(el)
+    })).filter(o => o.text || o.attrs.includes('export')).slice(0, 40);
 }
 """
 
@@ -124,12 +134,59 @@ def dump_dom(page, contexto):
     try:
         els = page.evaluate(JS_DUMP)
         log(f"    ── DOM DUMP [{contexto}] — {len(els)} elementos ──")
-        for e in els[:30]:
-            log(f"      {e['tag']:8} vis={str(e['visible']):5} "
-                f"text={e['text']!r:42} cls={e['cls'][:40]!r}")
+        for e in els[:35]:
+            log(f"      {e['tag']:7} vis={str(e['visible']):5} text={e['text']!r:36} "
+                f"attrs={e['attrs'][:45]!r} hiddenBy={e['hiddenBy'][:30]!r}")
         log("    ── fim do dump ──")
     except Exception as e:
         log(f"    dump falhou: {e}")
+
+
+
+JS_ATIVAR_ABA = """
+(hash) => {
+    // A BuyGoods usa abas Bootstrap: o painel só fica visível quando o link
+    // da aba é clicado. Navegar pelo hash carrega o DOM mas deixa o painel
+    // com display:none, e todo clique dentro dele vira no-op.
+    const alvo = hash.replace('#', '');
+    const link = document.querySelector(
+        `a[href="#${alvo}"], a[href$="#${alvo}"], [data-bs-target="#${alvo}"], [data-target="#${alvo}"]`
+    );
+    if (link) { link.click(); return 'link'; }
+
+    // fallback: ativar o painel na mão
+    const pane = document.getElementById(alvo);
+    if (pane) {
+        document.querySelectorAll('.tab-pane.active, .tab-pane.show')
+                .forEach(p => p.classList.remove('active', 'show'));
+        pane.classList.add('active', 'show');
+        pane.style.display = '';
+        return 'pane';
+    }
+    return null;
+}
+"""
+
+
+def ativar_aba(page, url_secao):
+    """Ativa a aba correspondente ao hash da URL e espera o painel aparecer."""
+    if '#' not in url_secao:
+        return
+    hash_ = '#' + url_secao.split('#', 1)[1]
+    for tentativa in range(3):
+        via = page.evaluate(JS_ATIVAR_ABA, hash_)
+        page.wait_for_timeout(1_200)
+        # confirmar que algo do painel ficou visível
+        visivel = page.evaluate("""
+            () => {
+                const els = [...document.querySelectorAll('table, .card, a[action=export]')];
+                return els.some(e => e.offsetParent !== null);
+            }
+        """)
+        if visivel:
+            log(f"    Aba ativada via {via} ✓")
+            return
+    log("    Aviso: painel da aba continua oculto")
 
 
 # ── login ─────────────────────────────────────────────────────────────────────
@@ -169,6 +226,7 @@ def ler_scheduled(page, account_id):
 # ── modal de colunas ──────────────────────────────────────────────────────────
 def modal_visivel(page):
     for sel in ["text=Available Columns", "text=Selected Columns",
+                "text=Report Title", "button:has-text('Create Export')",
                 ".modal.show", "[role=dialog]"]:
         try:
             if page.locator(sel).first.is_visible(timeout=1_000):
@@ -179,24 +237,55 @@ def modal_visivel(page):
 
 
 def preencher_modal(page, n_paginas):
-    """Marca todas as colunas em todas as páginas e clica Create Export."""
+    """
+    Para cada página de colunas: marca o checkbox mestre do cabeçalho
+    "AVAILABLE COLUMNS" (que seleciona todas as da página), clica
+    "Add Selected" e avança. No fim, clica "Create Export".
+    """
     for pagina in range(1, n_paginas + 1):
-        page.evaluate("""
-            () => document.querySelectorAll('input[type=checkbox]:not(:checked)')
-                    .forEach(cb => {
-                        cb.checked = true;
-                        cb.dispatchEvent(new Event('change', {bubbles: true}));
-                        cb.dispatchEvent(new Event('input',  {bubbles: true}));
-                    })
+        marcou = page.evaluate("""
+            () => {
+                // 1. checkbox mestre no cabeçalho AVAILABLE COLUMNS
+                const cabecalhos = [...document.querySelectorAll('*')].filter(
+                    e => (e.textContent || '').trim().toUpperCase() === 'AVAILABLE COLUMNS'
+                );
+                for (const cab of cabecalhos) {
+                    const bloco = cab.closest('div');
+                    const mestre = bloco && bloco.querySelector('input[type=checkbox]');
+                    if (mestre && !mestre.checked) {
+                        mestre.click();
+                        return 'mestre';
+                    }
+                }
+                // 2. fallback: marcar um a um dentro do painel de disponíveis
+                let n = 0;
+                document.querySelectorAll('input[type=checkbox]').forEach(cb => {
+                    if (!cb.checked) { cb.click(); n++; }
+                });
+                return n ? ('individual:' + n) : 'nada';
+            }
         """)
-        page.wait_for_timeout(250)
-        click_text(page, "Add Selected")
         page.wait_for_timeout(450)
 
+        add = click_text(page, "Add Selected")
+        page.wait_for_timeout(650)
+        log(f"    pág {pagina}/{n_paginas}: {marcou} | Add Selected={bool(add)}")
+
         if pagina < n_paginas:
-            if not click_text(page, str(pagina + 1)):
+            foi = page.evaluate("""
+                (proxima) => {
+                    const links = [...document.querySelectorAll(
+                        '.pagination a, .pagination button, .page-link, li a, li button')];
+                    const alvo = links.find(l => (l.textContent || '').trim() === String(proxima));
+                    if (!alvo) return false;
+                    alvo.click();
+                    return true;
+                }
+            """, pagina + 1)
+            if not foi:
+                log(f"    página {pagina + 1} não encontrada — encerrando seleção")
                 break
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(700)
 
     if click_text(page, "Create Export", "Create"):
         page.wait_for_timeout(1_500)
@@ -243,13 +332,33 @@ def criar_do_zero(page, account_id, tipo):
     try:
         page.goto(url, wait_until="networkidle", timeout=20_000)
         page.wait_for_timeout(1_800)
+        ativar_aba(page, tipo["url"])
 
         if tipo["sufixo"] == "orders":
-            if click_text(page, "Accepted"):
-                page.wait_for_timeout(500)
-                if click_text(page, "All"):
-                    page.wait_for_timeout(800)
-                    log("    Status: All ✓")
+            trocou = page.evaluate("""
+                () => {
+                    // o filtro de status é um dropdown cujo gatilho mostra "Accepted"
+                    const trig = [...document.querySelectorAll('button, a, .dropdown-toggle')]
+                        .find(e => (e.textContent || '').trim().startsWith('Accepted'));
+                    if (!trig) return 'gatilho nao encontrado';
+                    trig.click();
+                    return 'aberto';
+                }
+            """)
+            page.wait_for_timeout(700)
+            escolheu = page.evaluate("""
+                () => {
+                    // opção "All" dentro do menu aberto
+                    const opts = [...document.querySelectorAll(
+                        '.dropdown-menu a, .dropdown-item, li, [role=option], option')];
+                    const alvo = opts.find(o => (o.textContent || '').trim() === 'All');
+                    if (!alvo) return false;
+                    alvo.click();
+                    return true;
+                }
+            """)
+            page.wait_for_timeout(1_200)
+            log(f"    Status → All: {escolheu} ({trocou})")
 
         return abrir_modal(page, tipo["n_paginas"])
     except Exception as e:
