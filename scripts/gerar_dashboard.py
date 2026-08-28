@@ -20,10 +20,10 @@ import numpy as np
 
 ROOT         = Path(__file__).resolve().parent.parent
 DATA_DIR     = ROOT / "data"
-PUBLIC_DIR   = ROOT / "public"
+PUBLIC_DIR   = ROOT          # GitHub Pages serve a partir da raiz
 AOV_DIR      = DATA_DIR / "aov"
 TEMPLATE     = ROOT / "scripts" / "dashboard_template.html"
-OUT          = PUBLIC_DIR / "index.html"
+OUT          = ROOT / "index.html"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 def norm(s):
@@ -60,10 +60,39 @@ BW = {
 }
 
 # ── 1. carregar CSVs ──────────────────────────────────────────────────────────
-print("→ Carregando CSVs...")
-ped = pd.read_csv(DATA_DIR / "base_pedidos.csv.gz",     low_memory=False)
-ref = pd.read_csv(DATA_DIR / "base_reembolsos.csv.gz",  low_memory=False)
-cb  = pd.read_csv(DATA_DIR / "base_chargebacks.csv.gz", low_memory=False)
+print("→ Carregando CSVs particionados...")
+
+def carregar_particoes(subpasta):
+    """
+    Lê e concatena todas as partições mensais de uma base.
+
+    Os dados ficam em data/{subpasta}/AAAA-MM.csv.gz. Se a pasta não
+    existir, cai para o arquivo único antigo (compatibilidade).
+    """
+    pasta = DATA_DIR / subpasta
+    if pasta.is_dir():
+        arquivos = sorted(pasta.glob("*.csv.gz"))
+        if arquivos:
+            partes = [pd.read_csv(a, low_memory=False) for a in arquivos]
+            df = pd.concat(partes, ignore_index=True)
+            print(f"   {subpasta}: {len(arquivos)} mês(es), {len(df):,} linhas")
+            return df
+    # fallback: arquivo único
+    legado = DATA_DIR / f"base_{subpasta}.csv.gz"
+    if legado.exists():
+        df = pd.read_csv(legado, low_memory=False)
+        print(f"   {subpasta}: arquivo único (legado), {len(df):,} linhas")
+        return df
+    print(f"   {subpasta}: NENHUM DADO ENCONTRADO")
+    return pd.DataFrame()
+
+ped = carregar_particoes("pedidos")
+ref = carregar_particoes("reembolsos")
+cb  = carregar_particoes("chargebacks")
+
+if not len(ped):
+    print("ERRO: base de pedidos vazia — nada a gerar")
+    sys.exit(1)
 
 for d in (ped, ref, cb):
     d['data_pedido'] = pd.to_datetime(d['data_pedido'], errors='coerce')
@@ -463,7 +492,6 @@ template_html = TEMPLATE.read_text(encoding='utf-8')
 payload_json  = json.dumps(P, ensure_ascii=False, separators=(',', ':'), default=str)
 html          = template_html.replace('__PAYLOAD__', payload_json)
 
-PUBLIC_DIR.mkdir(exist_ok=True)
 OUT.write_text(html, encoding='utf-8')
 kb = OUT.stat().st_size // 1024
 print(f"✓ {OUT}  ({kb} KB)  |  data ref: {DATA_REF.date()}")
