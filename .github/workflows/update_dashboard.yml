@@ -2,8 +2,8 @@ name: Atualizar Dashboard
 
 on:
   schedule:
-    - cron: '0 9 * * *'   # 09:00 UTC = 06:00 BRT, todos os dias
-  workflow_dispatch:        # botão "Run workflow" manual no GitHub
+    - cron: '0 9 * * *'   # 09:00 UTC = 06:00 BRT
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -11,7 +11,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 60     # aborta se travar (31 contas × 3 tipos pode demorar)
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -31,22 +31,31 @@ jobs:
           pip install playwright
           playwright install chromium --with-deps
 
-      - name: Baixar exports da BuyGoods
+      # ── 1. baixar os xlsx dos últimos 60 dias ──────────────────────────────
+      - name: Baixar exports da BuyGoods (últimos 60 dias)
         env:
           BG_EMAIL:    ${{ secrets.BG_EMAIL }}
           BG_PASSWORD: ${{ secrets.BG_PASSWORD }}
           BG_ACCOUNTS: ${{ secrets.BG_ACCOUNTS }}
         run: python scripts/baixar_exports.py
 
-      - name: Processar dados (atualizar CSVs acumulados)
+      # ── 2. processar os xlsx novos → salvar em data/new/ ──────────────────
+      - name: Processar dados novos
         run: |
+          mkdir -p data/new
           python scripts/analise_ano_tigeroffers.py \
             --entrada entrada/ \
-            --saida   data/
+            --saida   data/new/
 
+      # ── 3. merge: acumular new/ com o histórico em data/ ──────────────────
+      - name: Merge com histórico acumulado
+        run: python scripts/merge_csvs.py
+
+      # ── 4. gerar o dashboard com o histórico completo ─────────────────────
       - name: Gerar dashboard HTML
         run: python scripts/gerar_dashboard.py
 
+      # ── 5. commit dos CSVs atualizados + dashboard ─────────────────────────
       - name: Commit e push
         run: |
           git config user.name  "github-actions[bot]"
