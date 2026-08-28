@@ -344,6 +344,41 @@ def abrir_modal(page, n_paginas):
 
 
 
+def esperar_tabela_pronta(page, timeout_ms=30_000):
+    """
+    Espera a tabela terminar de carregar.
+
+    O trace mostrou o script mexendo no filtro enquanto o spinner ainda
+    rodava: a tabela existe, mas o widget de status ainda não foi montado,
+    então o gatilho "Accepted" não responde ao clique.
+    Critério: sem spinner visível E com linhas de dados na tabela.
+    """
+    try:
+        page.wait_for_function("""
+            () => {
+                const visivel = el => el.offsetParent !== null &&
+                                      el.getClientRects().length > 0;
+
+                // 1. nenhum spinner/loader visível
+                const spinners = [...document.querySelectorAll(
+                    '.spinner-border, .spinner-grow, .loading, .loader, ' +
+                    '[class*="spinner"], [class*="loading"]')];
+                if (spinners.some(visivel)) return false;
+
+                // 2. tabela com linhas de dados visíveis
+                const linhas = [...document.querySelectorAll('table tbody tr')];
+                const comDados = linhas.filter(l =>
+                    visivel(l) && l.querySelectorAll('td').length > 1);
+                return comDados.length > 0;
+            }
+        """, timeout=timeout_ms)
+        page.wait_for_timeout(800)   # respiro para o JS ligar os handlers
+        return True
+    except PWTimeout:
+        log("    ⚠ tabela não terminou de carregar no tempo esperado")
+        return False
+
+
 def definir_status_all(page):
     """
     Troca o filtro de status de "Accepted" para "All" na tela de Orders Items.
@@ -441,6 +476,18 @@ def definir_status_all(page):
     return ok
 
 
+def definir_status_all_retry(page, tentativas=3):
+    """O widget às vezes só responde depois que o AJAX assenta — tenta de novo."""
+    for i in range(1, tentativas + 1):
+        if definir_status_all(page):
+            return True
+        if i < tentativas:
+            log(f"    tentativa {i}/{tentativas} falhou — aguardando e repetindo")
+            esperar_tabela_pronta(page, timeout_ms=15_000)
+            page.wait_for_timeout(1_500)
+    return False
+
+
 # ── caminho A: criar export do zero ───────────────────────────────────────────
 def criar_do_zero(page, account_id, tipo):
     url = f"{BASE}/{account_id}/{tipo['url']}"
@@ -452,23 +499,18 @@ def criar_do_zero(page, account_id, tipo):
 
         # a tabela é montada por AJAX; enquanto não termina, o container fica
         # com d-none e nenhum clique dentro dele funciona
-        try:
-            page.wait_for_function("""
-                () => {
-                    const linhas = document.querySelectorAll('table tbody tr');
-                    if (!linhas.length) return false;
-                    return [...linhas].some(l => l.offsetParent !== null);
-                }
-            """, timeout=20_000)
-            log("    Tabela renderizada e visível ✓")
-        except PWTimeout:
-            log("    ⚠ Tabela não ficou visível em 20s")
-            dump_dom(page, "tabela invisivel")
+        if esperar_tabela_pronta(page):
+            log("    Tabela carregada ✓")
+        else:
+            dump_dom(page, "tabela nao carregou")
 
         if tipo["sufixo"] == "orders":
-            if not definir_status_all(page):
+            esperar_tabela_pronta(page)
+            if not definir_status_all_retry(page):
                 log("    ⚠ seguindo mesmo assim — export pode vir só com Accepted")
-            page.wait_for_timeout(1_000)
+            # a troca do filtro dispara novo AJAX — esperar terminar,
+            # senão o modal abre com o estado antigo
+            esperar_tabela_pronta(page)
 
         return abrir_modal(page, tipo["n_paginas"])
     except Exception as e:
