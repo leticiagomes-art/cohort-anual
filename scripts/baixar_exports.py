@@ -70,8 +70,13 @@ def login(page):
     page.fill("input[type='email'], input[name='email']", EMAIL)
     page.fill("input[type='password'], input[name='password']", PASSWORD)
     page.click("button[type='submit']")
-    page.wait_for_url("**/dashboard**", timeout=30_000)
-    log("  OK")
+    # aguarda sair da página de login (URL muda para /{account_id} ou /shared)
+    page.wait_for_function(
+        "() => !window.location.href.includes('/login')",
+        timeout=30_000
+    )
+    page.wait_for_load_state("networkidle", timeout=15_000)
+    log(f"  OK — {page.url}")
 
 
 # ── ler Scheduled Export Jobs e classificar por tipo de date range ────────────
