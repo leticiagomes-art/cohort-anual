@@ -1,0 +1,19 @@
+# credenciais — NUNCA commitar
+scripts/accounts.json
+.env
+*.env
+
+# arquivos baixados pelo script (temporários)
+entrada/*.xlsx
+entrada/*.csv
+entrada/*.json
+
+# outputs locais de teste
+saida/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
