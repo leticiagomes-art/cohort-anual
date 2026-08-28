@@ -26,6 +26,9 @@ NEW_DIR  = DATA_DIR / "new"
 # base → (subpasta da partição, colunas que identificam uma linha única)
 BASES = {
     "base_pedidos":     ("pedidos",     ["order_item_id", "order_id"]),
+    # NAO usar order_item_id aqui: no export de reembolso/chargeback da
+    # BuyGoods essa coluna vem VAZIA em 100% das linhas, e a chave inteira
+    # viraria nula. order_id + data + valor e o que identifica a linha.
     "base_reembolsos":  ("reembolsos",  ["order_id", "refund_date", "amount"]),
     "base_chargebacks": ("chargebacks", ["order_id", "cb_date", "amount"]),
 }
@@ -106,15 +109,22 @@ for nome, (subpasta, chave_cols) in BASES.items():
                             .drop(columns="_k"))
         depois = len(juntos)
 
-        # trava: uma particao nunca pode encolher. Se encolheu, a chave de
-        # dedup esta errada — melhor abortar do que sobrescrever o historico
-        # com menos dado do que tinha.
-        if antigo is not None and depois < len(antigo):
-            log(f"  {subpasta}/{mes}: ABORTADO — {depois} < {len(antigo)} do historico")
-            sys.exit(
-                f"Merge de {subpasta}/{mes} reduziria o historico "
-                f"({len(antigo)} -> {depois}). Verifique a chave de deduplicacao."
-            )
+        # Trava contra perda de historico.
+        #
+        # A comparacao tem que ser com o historico JA DEDUPLICADO, nao com a
+        # contagem bruta: o export da BuyGoods repete linhas (um pedido com
+        # produto e frete reembolsados no mesmo dia vinha duplicado), e essas
+        # repeticoes existiam dentro do proprio arquivo antigo. Comparar com
+        # o bruto fazia a trava disparar por uma limpeza legitima.
+        if antigo is not None and len(antigo):
+            k_ant = chave_estavel(antigo, chave_cols)
+            base_ant = antigo.assign(_k=k_ant)["_k"].nunique() if k_ant is not None else len(antigo)
+            if depois < base_ant:
+                log(f"  {subpasta}/{mes}: ABORTADO — {depois} < {base_ant} unicos do historico")
+                sys.exit(
+                    f"Merge de {subpasta}/{mes} perderia dado "
+                    f"({base_ant} unicos -> {depois}). Verifique a chave de deduplicacao."
+                )
 
         juntos.to_csv(arq, index=False, compression="gzip")
         kb = arq.stat().st_size / 1024
