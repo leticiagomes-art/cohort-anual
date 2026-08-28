@@ -564,10 +564,41 @@ def rodar_agendado(page, account_id, tipo):
         log("    Job selecionado ✓")
         page.wait_for_timeout(600)
 
-        if click_text(page, "Run Selected", "Run"):
+        if not click_text(page, "Run Selected", "Run"):
+            dump_dom(page, "Run Selected não encontrado")
+            log("    ✗ Run Selected não encontrado")
+            return False
+
+        page.wait_for_timeout(1_000)
+
+        # A BuyGoods abre "Are you sure? You are about to run the scheduled
+        # jobs." — sem clicar em Yes o job NÃO roda, e o download fica
+        # esperando para sempre um arquivo que nunca é gerado.
+        confirmou = page.evaluate("""
+            () => {
+                const visivel = el => el.offsetParent !== null &&
+                                      el.getClientRects().length > 0;
+                const btns = [...document.querySelectorAll(
+                    'button, a, [role=button], .btn')];
+                const yes = btns.find(b =>
+                    (b.textContent || '').trim() === 'Yes' && visivel(b));
+                if (!yes) return false;
+                yes.scrollIntoView({block: 'center'});
+                yes.click();
+                return true;
+            }
+        """)
+
+        if confirmou:
+            log("    Confirmado 'Are you sure?' → Yes ✓")
+            page.wait_for_timeout(2_500)
+        else:
+            # alguns fluxos não pedem confirmação — só registra
+            log("    (sem diálogo de confirmação)")
             page.wait_for_timeout(1_500)
-            log("    Run Selected ✓")
-            return True
+
+        log("    Run Selected ✓")
+        return True
 
         dump_dom(page, "Run Selected não encontrado")
         log("    ✗ Run Selected não encontrado")
@@ -591,7 +622,8 @@ CAIXA_DOWNLOAD = 'dashboard-exports-table-v2-check-id'
 # ('Order Items' vs 'Orders Items', 'Customers Refunds' vs 'Customer Refunds',
 # 'Customers Chargebacks' vs só 'Chargebacks')
 KEYWORDS = {
-    'orders':      r'items?',
+    # "Order Items" e "Orders Items" — o s varia entre contas
+    'orders':      r'orders?\s+items?|items?',
     'refunds':     r'refunds?',
     'chargebacks': r'chargebacks?',
 }
