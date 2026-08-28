@@ -220,22 +220,42 @@ def login(page):
 
 # ── ler scheduled jobs ────────────────────────────────────────────────────────
 def ler_scheduled(page, account_id):
+    """
+    Lê a aba Scheduled Export Jobs.
+
+    Duas armadilhas que já nos pegaram:
+      1. Ler "table tbody tr" pega a tabela de Export Downloads, que tem
+         linhas antigas com date range fixo — foi assim que o NervoLyn
+         apareceu como 'January 01, 2026 - August 26, 2026' quando o
+         agendamento dele é 'Last 60 Days'. As caixas dos jobs têm prefixo
+         próprio, então filtramos por ele.
+      2. O nome do template varia: 'Order Items' vs 'Orders Items',
+         'Customers Refunds' vs 'Customer Refunds'. Casamos por regex.
+    """
     page.goto(f"{BASE}/{account_id}#exports", wait_until="networkidle", timeout=20_000)
     page.wait_for_timeout(1_500)
     click_text(page, "Scheduled Export Jobs")
-    page.wait_for_timeout(1_200)
+    page.wait_for_timeout(1_500)
 
     result = {t["nome"]: None for t in TIPOS}
-    for row in page.locator("table tbody tr").all():
-        cells = [td.inner_text().strip() for td in row.locator("td").all()]
-        if len(cells) < 2:
-            continue
-        template, date_range = cells[0], cells[1]
+    linhas = []
+    for _ in range(8):                       # as linhas não renderizam juntas
+        linhas = _linhas_com_caixa(page, CAIXA_JOB)
+        if len(linhas) >= 2:
+            break
+        page.wait_for_timeout(700)
+
+    for cid, texto in linhas:
         for t in TIPOS:
-            if t["nome"].lower() in template.lower():
-                if result[t["nome"]] != "All":
-                    result[t["nome"]] = date_range
+            if re.search(KEYWORDS[t["sufixo"]], texto, re.I):
+                # extrai o date range da linha (2a coluna)
+                m = re.search(r'(All|Last\s+\d+\s+Days|[A-Z][a-z]+ \d{1,2}, \d{4}.*)',
+                              texto)
+                valor = m.group(1).strip() if m else texto
+                if result[t["nome"]] is None:
+                    result[t["nome"]] = valor
                 break
+
     log(f"  Scheduled: {result}")
     return result
 
@@ -609,6 +629,75 @@ def rodar_agendado(page, account_id, tipo):
         return False
 
 
+
+def rodar_jobs_em_lote(page, account_id, sufixos):
+    """
+    Marca todos os jobs indicados de uma vez e clica Run Selected uma única
+    vez — é assim que se faz na mão e economiza uma volta inteira por tipo.
+    """
+    if not sufixos:
+        return False
+
+    log(f"  [Run Selected em lote] {', '.join(sufixos)}")
+    page.goto(f"{BASE}/{account_id}#exports", wait_until="networkidle", timeout=20_000)
+    page.wait_for_timeout(1_500)
+    click_text(page, "Scheduled Export Jobs")
+    page.wait_for_timeout(1_500)
+
+    padroes = [KEYWORDS[s_] for s_ in sufixos]
+    marcados = 0
+    for _ in range(8):
+        marcados = page.evaluate("""
+            (args) => {
+                const [prefixo, padroes] = args;
+                const res = padroes.map(p => new RegExp(p, 'i'));
+                let n = 0;
+                for (const cx of document.querySelectorAll(`input[id^="${prefixo}"]`)) {
+                    const tr = cx.closest('tr');
+                    const txt = tr ? tr.innerText : '';
+                    if (!res.some(r => r.test(txt))) continue;
+                    if (/\ball\b/i.test(txt)) continue;     // esse vai pelo modal
+                    if (!cx.checked) {
+                        cx.checked = true;
+                        cx.dispatchEvent(new Event('change', {bubbles: true}));
+                        cx.dispatchEvent(new Event('click',  {bubbles: true}));
+                    }
+                    n++;
+                }
+                return n;
+            }
+        """, [CAIXA_JOB, padroes])
+        if marcados:
+            break
+        page.wait_for_timeout(700)
+
+    if not marcados:
+        log("    Nenhum job marcado")
+        return False
+    log(f"    {marcados} job(s) marcado(s) ✓")
+    page.wait_for_timeout(600)
+
+    if not click_text(page, "Run Selected", "Run"):
+        dump_dom(page, "Run Selected não encontrado")
+        return False
+    page.wait_for_timeout(1_000)
+
+    confirmou = page.evaluate("""
+        () => {
+            const visivel = el => el.offsetParent !== null &&
+                                  el.getClientRects().length > 0;
+            const yes = [...document.querySelectorAll('button, a, [role=button], .btn')]
+                .find(b => (b.textContent || '').trim() === 'Yes' && visivel(b));
+            if (!yes) return false;
+            yes.click();
+            return true;
+        }
+    """)
+    log(f"    Confirmado 'Are you sure?' → Yes: {confirmou}")
+    page.wait_for_timeout(2_500)
+    return True
+
+
 # ── aguardar e baixar ──────────────────────────────────────────────────────
 
 # IDs das caixas de seleção das duas tabelas — é por elas que identificamos
@@ -784,17 +873,34 @@ def main():
             log(f"\n── {nome_conta} (id={account_id}) ──")
             sched = ler_scheduled(page, account_id)
 
+            # separar: quem roda por agendamento x quem precisa do modal
+            via_lote, via_modal = [], []
             for tipo in TIPOS:
                 dr = sched.get(tipo["nome"])
-                log(f"\n  {tipo['nome']}: date_range={dr!r}")
                 if dr and "60" in dr.lower():
-                    disparou = rodar_agendado(page, account_id, tipo)
+                    via_lote.append(tipo)
                 else:
-                    disparou = criar_do_zero(page, account_id, tipo)
-                    if not disparou:
-                        pendentes.append(f"{nome_conta}/{tipo['sufixo']} (date_range={dr})")
+                    via_modal.append((tipo, dr))
 
-                dest = aguardar_e_baixar(page, account_id, nome_conta, tipo) if disparou else None
+            # 1) dispara todos os agendados de uma vez só
+            if via_lote:
+                rodar_jobs_em_lote(page, account_id,
+                                   [t["sufixo"] for t in via_lote])
+
+            # 2) os que estão travados em "All" precisam do modal, um a um
+            for tipo, dr in via_modal:
+                log(f"\n  {tipo['nome']}: date_range={dr!r} → modal")
+                if not criar_do_zero(page, account_id, tipo):
+                    pendentes.append(f"{nome_conta}/{tipo['sufixo']} (date_range={dr})")
+                    erro.append(f"{nome_conta}/{tipo['sufixo']}")
+                    continue
+                dest = aguardar_e_baixar(page, account_id, nome_conta, tipo)
+                (ok if dest else erro).append(f"{nome_conta}/{tipo['sufixo']}")
+
+            # 3) baixa os que foram disparados em lote
+            for tipo in via_lote:
+                log(f"\n  {tipo['nome']}: baixando (agendado)")
+                dest = aguardar_e_baixar(page, account_id, nome_conta, tipo)
                 (ok if dest else erro).append(f"{nome_conta}/{tipo['sufixo']}")
 
         if GRAVAR:
