@@ -1,0 +1,53 @@
+name: Diagnóstico (vídeo + trace)
+
+# Workflow separado só para depurar: roda UMA conta, grava vídeo e trace,
+# e publica tudo como artifact para download. Não mexe nos dados nem faz push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      conta:
+        description: 'Nome da conta a testar (ex: BreathEaseX)'
+        required: false
+        default: 'BreathEaseX'
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Instalar dependências
+        run: |
+          pip install -r requirements.txt
+          pip install playwright
+          playwright install chromium --with-deps
+
+      - name: Rodar com gravação
+        env:
+          BG_EMAIL:    ${{ secrets.BG_EMAIL }}
+          BG_PASSWORD: ${{ secrets.BG_PASSWORD }}
+          BG_ACCOUNTS: ${{ secrets.BG_ACCOUNTS }}
+          DEBUG_DOM:   '1'
+          GRAVAR:      '1'
+          SO_UMA:      ${{ github.event.inputs.conta }}
+        run: python scripts/baixar_exports.py || true   # não falhar o job
+
+      - name: Publicar vídeo e trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostico-buygoods
+          path: |
+            diagnostico/
+            entrada/log_*.json
+          retention-days: 7
