@@ -53,7 +53,7 @@ BASE     = "https://admin.buygoods.com"
 # tipos de job e suas propriedades
 TIPOS = [
     {"nome": "Order Items",          "sufixo": "orders",      "n_paginas": 9,
-     "url_secao": "orders#items",    "keywords": ["order item"]},
+     "url_secao": "orders#orders-items",    "keywords": ["order item"]},
     {"nome": "Customers Refunds",    "sufixo": "refunds",     "n_paginas": 7,
      "url_secao": "customers#refunds",    "keywords": ["customer refund", "refund"]},
     {"nome": "Customers Chargebacks","sufixo": "chargebacks", "n_paginas": 7,
@@ -157,16 +157,17 @@ def abrir_modal_export(page, n_paginas):
         log("    Modal aberto via JS click ✓")
         return criar_export_modal(page, n_paginas)
 
-    # Tentativa 2: abrir dropdown primeiro
-    log("    Tentando via dropdown...")
-    dropdown_btn = page.locator(
-        "button.dropdown-toggle, "
-        "[data-toggle='dropdown'], "
-        "[data-bs-toggle='dropdown']"
-    ).first
-    if dropdown_btn.count():
-        dropdown_btn.click()
-        page.wait_for_timeout(600)
+    # Tentativa 2: abrir dropdown via JS (pode estar hidden)
+    log("    Tentando via dropdown JS...")
+    page.evaluate("""
+        () => {
+            const btn = document.querySelector(
+                'button.dropdown-toggle, [data-toggle="dropdown"], [data-bs-toggle="dropdown"]'
+            );
+            if (btn) btn.click();
+        }
+    """)
+    page.wait_for_timeout(800)
 
     # agora clicar no item Export dentro do dropdown aberto
     export_item = page.locator(
@@ -337,10 +338,18 @@ def rodar_scheduled_job(page, account_id, tipo):
             log(f"    Nenhum job selecionável — pulando")
             return False
 
-        # clicar Run Selected
-        run_btn = page.locator("button:has-text('Run Selected')").first
-        run_btn.wait_for(state="visible", timeout=8_000)
-        run_btn.click()
+        # clicar Run Selected via JS (botão pode estar hidden)
+        clicou = page.evaluate("""
+            () => {
+                const btns = [...document.querySelectorAll('button')];
+                const btn = btns.find(b => b.textContent.trim() === 'Run Selected');
+                if (btn) { btn.click(); return true; }
+                return false;
+            }
+        """)
+        if not clicou:
+            log("    Botão 'Run Selected' não encontrado via JS")
+            return False
         page.wait_for_timeout(1_500)
         log("    Run Selected ✓")
         return True
