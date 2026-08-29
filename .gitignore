@@ -10,6 +10,7 @@ entrada/*.json
 
 # outputs locais de teste
 saida/
+data/new/
 
 # Python
 __pycache__/

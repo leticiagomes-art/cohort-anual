@@ -86,7 +86,13 @@ for nome, (subpasta, chave_cols) in BASES.items():
         log(f"{nome}: arquivo novo vazio — pulando")
         continue
 
-    novo["data_pedido"] = pd.to_datetime(novo["data_pedido"], errors="coerce")
+    # format="mixed": o mesmo bug de sempre — "AAAA-MM-DD" misturado com
+    # "AAAA-MM-DD HH:MM:SS" na mesma coluna. Sem isso, um backfill grande (ex:
+    # export "All" da BuyGoods colado num Excel) trava no formato do primeiro
+    # valor e descarta a maioria das linhas ANTES de particionar por mes —
+    # um run real com 19.325 linhas novas de reembolso virou "6.152 linhas
+    # novas em 8 meses", perdendo quase todo o backfill de jan-mar.
+    novo["data_pedido"] = pd.to_datetime(novo["data_pedido"], errors="coerce", format="mixed")
     novo["_part"] = novo["data_pedido"].dt.strftime("%Y-%m")
     novo = novo[novo["_part"].notna()]
     log(f"{nome}: {len(novo):,} linhas novas em {novo['_part'].nunique()} mes(es)")
