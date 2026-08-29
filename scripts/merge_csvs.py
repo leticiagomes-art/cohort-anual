@@ -53,7 +53,14 @@ def chave_estavel(df, colunas):
     for c in cols:
         col = df[c]
         if "date" in c or "data" in c:
-            col = pd.to_datetime(col, errors="coerce").dt.strftime("%Y-%m-%d")
+            # format="mixed" e obrigatorio: o historico acumulado mistura
+            # "AAAA-MM-DD" com "AAAA-MM-DD HH:MM:SS" na mesma coluna. Sem
+            # isso, pd.to_datetime trava no formato do primeiro valor nao
+            # nulo e vira NaT em quase todas as linhas — a chave de milhares
+            # de reembolsos colapsava para "order_id|NaT|amount", arriscando
+            # colisao silenciosa entre reembolsos distintos do mesmo pedido.
+            col = pd.to_datetime(col, errors="coerce",
+                                  format="mixed").dt.strftime("%Y-%m-%d")
         elif col.dtype.kind == "f":
             col = col.round(2)
         partes.append(col.astype(str).str.strip())
@@ -103,10 +110,9 @@ for nome, (subpasta, chave_cols) in BASES.items():
 
         antes = len(juntos)
         k = chave_estavel(juntos, chave_cols)
-        if k is not None:
-            juntos = (juntos.assign(_k=k)
-                            .drop_duplicates("_k", keep="last")
-                            .drop(columns="_k"))
+        chaveado = juntos.assign(_k=k) if k is not None else None
+        if chaveado is not None:
+            juntos = chaveado.drop_duplicates("_k", keep="last").drop(columns="_k")
         depois = len(juntos)
 
         # Trava contra perda de historico.
@@ -121,6 +127,38 @@ for nome, (subpasta, chave_cols) in BASES.items():
             base_ant = antigo.assign(_k=k_ant)["_k"].nunique() if k_ant is not None else len(antigo)
             if depois < base_ant:
                 log(f"  {subpasta}/{mes}: ABORTADO — {depois} < {base_ant} unicos do historico")
+                if chaveado is not None:
+                    n_ant = len(antigo)
+                    cols_show = [c for c in chave_cols if c in chaveado.columns]
+                    # colisao DENTRO do proprio historico: a chave calculada no
+                    # bloco concatenado agrupa 2+ linhas que vieram do antigo.
+                    # Se isso acontecer, o merge com o arquivo novo nao e a
+                    # causa — a chave ja e fraca demais para o historico sozinho.
+                    grp_ant = chaveado.iloc[:n_ant].groupby("_k").size()
+                    colididas = grp_ant[grp_ant > 1]
+                    if len(colididas):
+                        log(f"    {len(colididas)} chave(s) colidem DENTRO do "
+                            f"proprio historico (nao e culpa do arquivo novo):")
+                        bloco_ant = chaveado.iloc[:n_ant]
+                        for _k_val, n in colididas.items():
+                            linhas = bloco_ant[bloco_ant["_k"] == _k_val]
+                            log(f"      chave={_k_val!r} ({n} linhas): " +
+                                " || ".join(linhas[cols_show].astype(str)
+                                            .agg(" | ".join, axis=1)))
+                    else:
+                        # nenhuma colisao interna: a chave de uma linha do
+                        # historico bateu com a de uma linha do arquivo novo
+                        # que, na vida real, e um pedido diferente.
+                        sumidas = (set(pd.Series(k_ant).dropna())
+                                   - set(chaveado["_k"].dropna()))
+                        exemplos = antigo.assign(_k=k_ant)
+                        exemplos = exemplos[exemplos["_k"].isin(sumidas)]
+                        log(f"    nenhuma colisao interna — {len(exemplos)} "
+                            f"linha(s) do historico sumiram por colisao com "
+                            f"o arquivo novo:")
+                        for _, r in exemplos.head(20).iterrows():
+                            log("      sumiu: " + " | ".join(
+                                str(r[c]) for c in cols_show if c in r))
                 sys.exit(
                     f"Merge de {subpasta}/{mes} perderia dado "
                     f"({base_ant} unicos -> {depois}). Verifique a chave de deduplicacao."

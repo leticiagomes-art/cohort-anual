@@ -95,9 +95,15 @@ if not len(ped):
     sys.exit(1)
 
 for d in (ped, ref, cb):
-    d['data_pedido'] = pd.to_datetime(d['data_pedido'], errors='coerce')
+    # format='mixed' e obrigatorio aqui: o CSV acumulado mistura datas
+    # "AAAA-MM-DD" (sem hora) com "AAAA-MM-DD HH:MM:SS" (com hora) na mesma
+    # coluna, dependendo de qual arquivo/merge escreveu cada linha. Sem
+    # format='mixed', pd.to_datetime trava no formato do PRIMEIRO valor nao
+    # nulo e vira NaT em todo o resto — foi o que fez o total de reembolso
+    # do ano cair de ~US$ 1,4 mi para US$ 2 mil no dashboard.
+    d['data_pedido'] = pd.to_datetime(d['data_pedido'], errors='coerce', format='mixed')
     if 'data_evento' in d.columns:
-        d['data_evento'] = pd.to_datetime(d['data_evento'], errors='coerce')
+        d['data_evento'] = pd.to_datetime(d['data_evento'], errors='coerce', format='mixed')
 
 # âncora: última data com dado nos arquivos (não data de hoje)
 DATA_REF = ped['data_pedido'].max().normalize()
