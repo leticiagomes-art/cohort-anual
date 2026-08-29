@@ -375,7 +375,17 @@ def esperar_tabela_pronta(page, timeout_ms=30_000):
     O trace mostrou o script mexendo no filtro enquanto o spinner ainda
     rodava: a tabela existe, mas o widget de status ainda não foi montado,
     então o gatilho "Accepted" não responde ao clique.
-    Critério: sem spinner visível E com linhas de dados na tabela.
+    Critério: sem spinner visível E (com linhas de dados na tabela OU a
+    tabela declarou explicitamente que está vazia).
+
+    Contas de baixo volume (NailsClean, BoosterXTGerman, EyeVitalis, etc.)
+    batiam o timeout de 30s em TODA aba, sempre — não porque a tabela
+    estivesse lenta, mas porque ela terminava de carregar vazia e a
+    condição só aceitava "tem linha com dado". Isso empurrava runs de
+    31 contas de ~35min pra mais de 1h. DataTables marca vazio com uma
+    linha única <td class="dataTables_empty">, ou o texto
+    "No data available in table" nem chega a existir se a chamada AJAX
+    devolveu 0 registros — os dois casos agora contam como "pronta".
     """
     try:
         page.wait_for_function("""
@@ -389,11 +399,21 @@ def esperar_tabela_pronta(page, timeout_ms=30_000):
                     '[class*="spinner"], [class*="loading"]')];
                 if (spinners.some(visivel)) return false;
 
-                // 2. tabela com linhas de dados visíveis
+                // 2a. tabela com linhas de dados visíveis
                 const linhas = [...document.querySelectorAll('table tbody tr')];
                 const comDados = linhas.filter(l =>
                     visivel(l) && l.querySelectorAll('td').length > 1);
-                return comDados.length > 0;
+                if (comDados.length > 0) return true;
+
+                // 2b. tabela terminou de carregar e declarou vazia (DataTables)
+                const vazia = linhas.some(l => visivel(l) &&
+                    l.querySelector('.dataTables_empty, [class*="empty"]'));
+                if (vazia) return true;
+                const infoTexto = document.querySelector('.dataTables_info');
+                if (infoTexto && visivel(infoTexto) &&
+                    /\\b0\\b.*entries|showing 0/i.test(infoTexto.textContent)) return true;
+
+                return false;
             }
         """, timeout=timeout_ms)
         page.wait_for_timeout(800)   # respiro para o JS ligar os handlers

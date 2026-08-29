@@ -328,9 +328,13 @@ const PERIODO=refDia?`01 jan → ${String(refDia).padStart(2,'0')} ${MESES_ABREV
 
 V.geral=()=>{
   const mm=D.mensal;
+  const rm=D.reconMensal||[];
+  const ofG=rm.reduce((a,r)=>a+(N(r['Gross oficial'])||0),0), ofR=rm.reduce((a,r)=>a+(N(r['Reembolso oficial'])||0),0);
+  const notaG=rm.length?`${mm.length} meses · oficial ${moneyK(ofG)} (gap ${pct((G-ofG)/ofG,1)})`:`${mm.length} meses · média ${moneyK(G/mm.length)}/mês`;
+  const notaR=rm.length?`${pct(RF/G)} do gross · ${pct(Math.abs((RF-ofR)/ofR),0)} abaixo do oficial (${moneyK(ofR)}) — ver aba Qualidade do dado`:pct(RF/G)+' do gross no ano';
   const cards=[
-    {l:'Gross',v:moneyK(G),n:`${mm.length} meses · média ${moneyK(G/mm.length)}/mês`,c:'is-navy',s:mm.map(r=>N(r.Gross)),col:'var(--navy)'},
-    {l:'Reembolso',v:moneyK(RF),n:pct(RF/G)+' do gross no ano',c:'is-red',s:mm.map(r=>N(r['Valor reembolsado'])),col:'var(--red)'},
+    {l:'Gross',v:moneyK(G),n:notaG,c:'is-navy',s:mm.map(r=>N(r.Gross)),col:'var(--navy)'},
+    {l:'Reembolso',v:moneyK(RF),n:notaR,c:'is-red',s:mm.map(r=>N(r['Valor reembolsado'])),col:'var(--red)'},
     {l:'Chargeback',v:moneyK(CB),n:pct(CB/G)+' do gross no ano',c:'is-amber',s:mm.map(r=>N(r['Valor de chargeback'])),col:'var(--amber)'},
     {l:'Saída total',v:pct((RF+CB)/G),n:`a cada $100 vendidos, $${Math.round((RF+CB)/G*100)} voltam`,c:'is-red',s:mm.map(r=>N(r['% Saida total ($)'])),col:'var(--red)'}
   ].map(k=>`<div class="card kpi ${k.c}"><div class="lab">${k.l}</div><div class="val">${k.v}</div>
@@ -581,6 +585,7 @@ window.setCoh=(btn,isCB)=>{
 
 V.decisao=()=>{
   const sv=D.salvamento;
+  const svGet=k=>sv[k]||{n:0,salvos:0,taxaSalvo:0,retido:0,ticket:0};
   const rows=D.decP.map(r=>({k:mesLbl(r.mes),parts:[
     {name:'Agente humano BuyGoods',v:N(r['Agente BuyGoods'])||0,color:'var(--c1)',dark:1},
     {name:'CS interno TigerOffers',v:N(r['Agente Tiger (CS interno)'])||0,color:'var(--green)'},
@@ -621,12 +626,12 @@ V.decisao=()=>{
 
   <div class="sec">As duas semanas de acesso interno tiveram resultado?</div>
   <div class="grid g4">
-    <div class="card kpi is-green"><div class="lab">Taxa de salvamento</div><div class="val">${pct(sv['Agente Tiger (CS interno)'].taxaSalvo,0)}</div>
-      <div class="note">11 dos 14 reembolsos foram parciais com venda mantida</div></div>
-    <div class="card kpi is-green"><div class="lab">Valor retido</div><div class="val">${money(sv['Agente Tiger (CS interno)'].retido)}</div>
-      <div class="note">de $3.176 em pedidos · ficou ${pct(D.funil.retencaoObs,0)}</div></div>
-    <div class="card kpi is-navy"><div class="lab">Ticket médio</div><div class="val">${money(sv['Agente Tiger (CS interno)'].ticket)}</div>
-      <div class="note">38% abaixo do agente BuyGoods (${money(sv['Agente BuyGoods'].ticket)})</div></div>
+    <div class="card kpi is-green"><div class="lab">Taxa de salvamento</div><div class="val">${pct(svGet('Agente Tiger (CS interno)').taxaSalvo,0)}</div>
+      <div class="note">${svGet('Agente Tiger (CS interno)').salvos} de ${svGet('Agente Tiger (CS interno)').n} reembolsos foram parciais com venda mantida</div></div>
+    <div class="card kpi is-green"><div class="lab">Valor retido</div><div class="val">${money(svGet('Agente Tiger (CS interno)').retido)}</div>
+      <div class="note">em pedidos com venda parcialmente mantida</div></div>
+    <div class="card kpi is-navy"><div class="lab">Ticket médio</div><div class="val">${money(svGet('Agente Tiger (CS interno)').ticket)}</div>
+      <div class="note">agente BuyGoods: ${money(svGet('Agente BuyGoods').ticket)}</div></div>
     <div class="card kpi is-amber"><div class="lab">Tickets sem resolver</div><div class="val">${D.funil.recebidos-D.funil.resolvidos}</div>
       <div class="note">de ${D.funil.recebidos} recebidos na semana 15–21</div></div>
   </div>
@@ -634,15 +639,15 @@ V.decisao=()=>{
     <div class="card"><h3>Quando um humano nosso atende, a venda sobrevive</h3>
       <p class="cap">Reembolsos de 17 a 26/08 com motivo "Partial Refund — Saved Sale": o cliente aceitou devolução parcial e manteve o pedido.</p>
       ${['Agente Tiger (CS interno)','Agente BuyGoods','System (automatico BuyGoods)'].map(k=>{
-        const v=sv[k]; const cor=k.indexOf('Tiger')>=0?'var(--green)':k.indexOf('BuyGoods)')>=0?'var(--red)':'var(--c3)';
+        const v=svGet(k); const cor=k.indexOf('Tiger')>=0?'var(--green)':k.indexOf('BuyGoods)')>=0?'var(--red)':'var(--c3)';
         const nome=k.replace(' (CS interno)',' · nosso time').replace(' (automatico BuyGoods)',' · automático');
         return `<div style="margin-bottom:14px">
           <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px">
             <span>${nome}</span>
             <span class="num" style="color:var(--ink-2)">${v.salvos} de ${v.n} · <b>${pct(v.taxaSalvo,1)}</b></span></div>
           <div style="height:12px;background:var(--line-soft);border-radius:4px;overflow:hidden">
-            <div style="width:${v.taxaSalvo*100}%;height:100%;background:${cor};border-radius:4px"></div></div></div>`}).join('')}
-      <div class="ok" style="margin-top:6px"><b>78,6% contra 11,6% e 1,0%.</b> A diferença não é de esforço, é de mandato:
+            <div style="width:${(v.taxaSalvo||0)*100}%;height:100%;background:${cor};border-radius:4px"></div></div></div>`}).join('')}
+      <div class="ok" style="margin-top:6px"><b>${pct(svGet('Agente Tiger (CS interno)').taxaSalvo,1)} contra ${pct(svGet('Agente BuyGoods').taxaSalvo,1)} e ${pct(svGet('System (automatico BuyGoods)').taxaSalvo,1)}.</b> A diferença não é de esforço, é de mandato:
       o automático não negocia, e o agente da BuyGoods não tem incentivo para segurar a venda de um produto que não é dele.</div></div>
     <div class="card"><h3>O funil da semana 15–21</h3><p class="cap">Dado da conta interna no helpdesk: ${Math.round(D.funil.recebidos/7)} tickets recebidos por dia.</p>
       ${[['Tickets recebidos',D.funil.recebidos,'var(--navy)'],['Resolvidos',D.funil.resolvidos,'var(--blue)'],
@@ -877,36 +882,47 @@ V.maxweb=()=>{
 };
 
 V.dados=()=>{
-  const rc=D.recon.filter(r=>N(r['Gross oficial'])>0);
-  const so=rc.reduce((a,r)=>a+(N(r['Reembolso oficial'])||0),0), sc=rc.reduce((a,r)=>a+(N(r['Reembolso calculado'])||0),0);
+  const rm=D.reconMensal||[];
+  const so=rm.reduce((a,r)=>a+(N(r['Reembolso oficial'])||0),0), sc=rm.reduce((a,r)=>a+(N(r['Reembolso calculado'])||0),0);
+  const go_=rm.reduce((a,r)=>a+(N(r['Gross oficial'])||0),0), gc=rm.reduce((a,r)=>a+(N(r['Gross calculado'])||0),0);
   const val=D.validacao||{};
   return `<div class="grid g4">
-    ${rc.length?`<div class="card kpi is-green"><div class="lab">Gap no reembolso</div><div class="val">${pct(Math.abs(so-sc)/(so||1),1)}</div>
-      <div class="note">calculado vs Master Accounts oficial</div></div>`
+    ${rm.length?`<div class="card kpi ${Math.abs((sc-so)/so)>.15?'is-red':'is-amber'}"><div class="lab">Gap no reembolso</div><div class="val">${pct((sc-so)/so,1)}</div>
+      <div class="note">${money(sc)} calculado vs ${money(so)} no Master Overview oficial</div></div>`
       :`<div class="card kpi is-navy"><div class="lab">Gap no reembolso</div><div class="val">—</div>
-      <div class="note">reconciliação contra o Master Accounts oficial não é automatizada ainda</div></div>`}
+      <div class="note">sem Master Overview carregado em data/master/</div></div>`}
+    <div class="card kpi ${rm.length&&Math.abs((gc-go_)/go_)>.05?'is-amber':'is-green'}"><div class="lab">Gap no gross</div><div class="val">${rm.length?pct((gc-go_)/go_,1):'—'}</div>
+      <div class="note">${rm.length?`${money(gc)} vs ${money(go_)} oficial`:'sem Master Overview carregado'}</div></div>
     <div class="card kpi is-green"><div class="lab">Casamento por Order ID</div><div class="val">${val.casamentoReembolso==null?'—':pct(val.casamentoReembolso)}</div>
       <div class="note">reembolsos com order_id achado na base de pedidos</div></div>
     <div class="card kpi is-navy"><div class="lab">Casamento chargeback</div><div class="val">${val.casamentoChargeback==null?'—':pct(val.casamentoChargeback)}</div>
       <div class="note">chargebacks com order_id achado na base de pedidos</div></div>
-    <div class="card kpi is-navy"><div class="lab">Contas conferidas</div><div class="val">${rc.length}</div>
-      <div class="note">uma a uma contra o oficial</div></div>
   </div>
-  <div class="sec">Reconciliação conta a conta</div>
-  ${rc.length?table([
-    {h:'Conta',get:r=>r['Conta (oficial)']},
+  ${rm.length&&Math.abs((sc-so)/so)>.15?`<div class="alerta" style="margin-top:2px"><b>O reembolso calculado está ${pct(Math.abs((sc-so)/so),0)} abaixo do oficial — isso não é o bug de parsing de data já corrigido.</b>
+  É gap de cobertura: os jobs de Customers Refunds/Chargebacks rodam com "Last 60 Days", e o merge só acumula o que algum
+  dia caiu dentro dessa janela. Meses mais antigos (jan–mar) nunca tiveram um recorte de 60 dias que os alcançasse.
+  Fechar isso exige um backfill único: rodar Customers Refunds e Customers Chargebacks com Date Range "All" pra todas as
+  31 contas (o caminho de modal do <code>baixar_exports.py</code> já sabe fazer isso — é mais lento, mas cobre o histórico
+  inteiro) e deixar o <code>merge_csvs.py</code> absorver o que faltava.</div>`:''}
+  <div class="sec">Reconciliação mensal contra o Master Overview</div>
+  ${rm.length?table([
+    {h:'Mês',get:r=>mesLbl(r.mes)},
     {h:'Gross oficial',r:1,num:1,get:r=>money(N(r['Gross oficial'])),sort:r=>N(r['Gross oficial'])||0},
     {h:'Gross calculado',r:1,num:1,get:r=>money(N(r['Gross calculado'])),sort:r=>N(r['Gross calculado'])||0},
     {h:'Reembolso oficial',r:1,num:1,get:r=>money(N(r['Reembolso oficial'])),sort:r=>N(r['Reembolso oficial'])||0},
     {h:'Reembolso calculado',r:1,num:1,get:r=>money(N(r['Reembolso calculado'])),sort:r=>N(r['Reembolso calculado'])||0},
-    {h:'Gap',r:1,num:1,get:r=>{const v=N(r['% do gap de reembolso']);
-      return v==null?'—':`<span style="color:${Math.abs(v)>.1?'var(--amber)':'var(--green)'}">${(v*100).toFixed(1).replace('.',',')}%</span>`},
-      sort:r=>Math.abs(N(r['% do gap de reembolso'])??0)}
-  ],rc.sort((a,b)=>N(b['Gross oficial'])-N(a['Gross oficial'])))
-  :`<div class="card"><p class="cap">O pipeline automatizado não baixa nem faz o parse do relatório Master Overview/Master
-    Accounts da BuyGoods a cada execução — só o export por conta (Order Items/Refunds/Chargebacks). Reconciliar conta a
-    conta contra o oficial exige adicionar esse download ao <code>baixar_exports.py</code> e ligar a saída ao
-    <code>gerar_dashboard.py</code>. Hoje essa comparação é manual, quando alguém baixa o relatório oficial à parte.</p></div>`}
+    {h:'Gap reembolso',r:1,num:1,get:r=>{const v=N(r['gap Reembolso']);
+      return v==null?'—':`<span style="color:${Math.abs(v)>.15?'var(--red)':Math.abs(v)>.05?'var(--amber)':'var(--green)'}">${pct(v,1)}</span>`},
+      sort:r=>Math.abs(N(r['gap Reembolso'])??0)}
+  ],rm)
+  :`<div class="card"><p class="cap">Nenhum relatório Master Overview encontrado em <code>data/master/</code>. Suba o .xls/.xlsx
+    oficial da BuyGoods (Master Overview, agregado mensal) nessa pasta — o nome do arquivo pode variar, o script pega o
+    mais recente com "verview" ou "aster" no nome.</p></div>`}
+  <div class="sec">Reconciliação conta a conta</div>
+  <div class="card"><p class="cap">O pipeline automatizado ainda não baixa nem faz o parse do relatório <b>Master Accounts</b>
+    (diferente do Master Overview acima: aquele traz Gross/Reembolso por CONTA, não só o total mensal). Reconciliar conta
+    a conta contra o oficial exige adicionar esse download ao <code>baixar_exports.py</code> e ligar a saída ao
+    <code>gerar_dashboard.py</code>. Hoje essa comparação é manual, quando alguém baixa o relatório oficial à parte.</p></div>
   <div class="sec">Verificações executadas</div>
   ${D.valid.length?table([
     {h:'Verificação',get:r=>r.Verificacao},

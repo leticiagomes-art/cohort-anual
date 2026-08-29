@@ -22,6 +22,7 @@ ROOT         = Path(__file__).resolve().parent.parent
 DATA_DIR     = ROOT / "data"
 PUBLIC_DIR   = ROOT          # GitHub Pages serve a partir da raiz
 AOV_DIR      = DATA_DIR / "aov"
+MASTER_DIR   = DATA_DIR / "master"
 TEMPLATE     = ROOT / "scripts" / "dashboard_template.html"
 OUT          = ROOT / "index.html"
 
@@ -139,13 +140,53 @@ def latest(prefix):
     files = sorted(glob.glob(str(AOV_DIR / f"{prefix}*.xlsx")))
     return files[-1] if files else None
 
-white_f = latest("white_") or latest("relatorio_afiliados_allProducts_2026-07-29")
-black_f = latest("black_") or latest("relatorio_afiliados_allProducts_2026-06-01")
+# "white_"/"black_" e o nome esperado se alguem renomear o arquivo na mao.
+# Sem isso, o padrao real e "relatorio_afiliados_allProducts_AAAA-MM-DD_a_AAAA-MM-DD.xlsx"
+# — o periodo anda a cada atualizacao (a cada ~2 semanas), entao NUNCA fixar a
+# data no prefixo: sempre pegar os dois relatorios mais recentes por data de
+# INICIO embutida no nome (ordenacao lexicografica de AAAA-MM-DD funciona).
+# O mais recente = White (atual); o anterior a ele = Black (periodo passado).
+_relatorios = sorted(glob.glob(str(AOV_DIR / "relatorio_afiliados_allProducts_*.xlsx")))
+white_f = latest("white_") or (_relatorios[-1] if _relatorios else None)
+black_f = latest("black_") or (_relatorios[-2] if len(_relatorios) >= 2 else None)
 
 aov_w = load_aov(white_f) if white_f else {}
 aov_b = load_aov(black_f) if black_f else {}
 print(f"   white: {Path(white_f).name if white_f else 'n/a'} ({len(aov_w)})")
 print(f"   black: {Path(black_f).name if black_f else 'n/a'} ({len(aov_b)})")
+
+# ── 2b. Master Overview oficial (BuyGoods) ────────────────────────────────────
+# Relatorio agregado mensal oficial — so tem Gross/Refund/Chargeback por mes,
+# SEM quebra por conta (isso e o "Master Accounts", um relatorio diferente que
+# o pipeline ainda nao baixa). Serve pra reconciliar o total calculado contra
+# o oficial; nao alimenta a tabela "conta a conta".
+def load_master_overview(path):
+    raw = pd.read_excel(path, header=None)
+    header_i = None
+    for i in range(min(15, len(raw))):
+        if raw.iloc[i].astype(str).str.contains('Gross Sales', na=False).any():
+            header_i = i
+            break
+    if header_i is None:
+        return {}
+    df = pd.read_excel(path, skiprows=header_i)
+    df = df[df['Date'].notna() & (df['Date'].astype(str).str.upper() != 'TOTAL')].copy()
+    df['mes'] = pd.to_datetime(df['Date'], format='%B %Y', errors='coerce').dt.strftime('%Y-%m')
+    df = df[df['mes'].notna()]
+    out = {}
+    for _, r in df.iterrows():
+        out[r['mes']] = {
+            'gross':      sf(r.get('Gross Sales')),
+            'refund':     sf(r.get('Refunds')),
+            'chargeback': sf(r.get('Chargebacks')),
+        }
+    return out
+
+master_f = sorted(glob.glob(str(MASTER_DIR / "*verview*.xls*")) +
+                   glob.glob(str(MASTER_DIR / "*aster*.xls*")))
+master_f = master_f[-1] if master_f else None
+oficial_mes = load_master_overview(master_f) if master_f else {}
+print(f"   master overview: {Path(master_f).name if master_f else 'n/a'} ({len(oficial_mes)} meses)")
 
 # ── 3. mensal ─────────────────────────────────────────────────────────────────
 print("→ Mensal...")
@@ -167,6 +208,22 @@ for m in meses:
         '% Saida total ($)':  sf((rv + cv) / g) if g else None,
         'Alerta': ('VERMELHO' if (rv+cv)/g >= .25 else
                    'LARANJA'  if (rv+cv)/g >= .18 else 'VERDE') if g else None,
+    })
+
+# reconciliacao mensal contra o Master Overview oficial (quando o arquivo existe)
+recon_mensal = []
+for m in mensal:
+    of = oficial_mes.get(m['mes'])
+    if not of:
+        continue
+    recon_mensal.append({
+        'mes': m['mes'],
+        'Gross oficial': of['gross'], 'Gross calculado': m['Gross'],
+        'Reembolso oficial': of['refund'], 'Reembolso calculado': m['Valor reembolsado'],
+        'Chargeback oficial': of['chargeback'], 'Chargeback calculado': m['Valor de chargeback'],
+        'gap Gross': sf((m['Gross'] - of['gross']) / of['gross']) if of['gross'] else None,
+        'gap Reembolso': sf((m['Valor reembolsado'] - of['refund']) / of['refund']) if of['refund'] else None,
+        'gap Chargeback': sf((m['Valor de chargeback'] - of['chargeback']) / of['chargeback']) if of['chargeback'] else None,
     })
 
 # ── 4. afiliados ──────────────────────────────────────────────────────────────
@@ -439,6 +496,57 @@ print("→ Montando payload...")
 RF = sum(r['Valor reembolsado'] for r in mensal)
 CB = sum(r['Valor de chargeback'] for r in mensal)
 
+# Black x White por produto — recalculado a cada execucao (nao e mais um
+# instantaneo manual). BW[produto] = data em que o funil virou pra 100% White
+# (ou 50/50 no caso do BreathEaseX, ver OBS_VIRADA no analise_ano_tigeroffers.py).
+def fase_bw(produto, data_pedido):
+    virada = BW.get(produto)
+    if not virada or pd.isna(data_pedido):
+        return None
+    return 'WHITE' if pd.Timestamp(data_pedido) >= pd.Timestamp(virada) else 'BLACK'
+
+bw = []
+for p in prods:
+    virada = BW.get(p)
+    if not virada:
+        continue
+    pp = ped_a[ped_a['produto'] == p]
+    rr = ref_a[ref_a['produto'] == p] if len(ref_a) else ref_a
+    cc = cb_a[cb_a['produto']   == p] if len(cb_a)  else cb_a
+    fase_pp = pp['data_pedido'].map(lambda d: fase_bw(p, d))
+    fase_rr = rr['data_pedido'].map(lambda d: fase_bw(p, d)) if len(rr) else rr
+    fase_cc = cc['data_pedido'].map(lambda d: fase_bw(p, d)) if len(cc) else cc
+
+    def taxa(fase):
+        g_  = float(pp.loc[fase_pp == fase, 'amount'].sum())
+        rv_ = float(rr.loc[fase_rr == fase, 'amount'].sum()) if len(rr) else 0.0
+        cv_ = float(cc.loc[fase_cc == fase, 'amount'].sum()) if len(cc) else 0.0
+        return (sf((rv_ + cv_) / g_) if g_ > 0 else None), g_
+
+    taxa_black, g_black = taxa('BLACK')
+    taxa_white, g_white = taxa('WHITE')
+    if g_black <= 0 and g_white <= 0:
+        continue
+    delta = sf(taxa_white - taxa_black) if (taxa_black is not None and taxa_white is not None) else None
+    if delta is None:
+        veredito = 'sem as duas fases'
+    elif delta < -0.01:
+        veredito = 'MELHOROU'
+    elif delta > 0.01:
+        veredito = 'PIOROU'
+    else:
+        veredito = 'estavel'
+    dias_white = int((DATA_REF - pd.Timestamp(virada)).days)
+    if dias_white < 60 and veredito == 'MELHOROU':
+        veredito = 'MELHOROU? - nao conclusivo, janela imatura'
+    bw.append({
+        'produto': p, 'Data da virada': virada,
+        'Taxa BLACK (mix 70/30)': taxa_black, 'Taxa WHITE': taxa_white,
+        'Delta da taxa (WHITE - BLACK)': delta,
+        'Dias de White ate hoje': dias_white, 'Veredito': veredito,
+    })
+bw.sort(key=lambda r: r['Data da virada'])
+
 # fases da operacao de atendimento — a coluna 'fase' ja vem calculada pelo
 # analise_ano_tigeroffers.py em cada CSV; so falta agregar por fase.
 fases = []
@@ -475,8 +583,9 @@ P = {
     'decP':         dec_p,
     'decV':         dec_v,
     'produtos':     produtos,
-    'bw':           [],
+    'bw':           bw,
     'recon':        [],
+    'reconMensal':  recon_mensal,
     'validacao':    validacao,
     'cobprod':      [],
     'valid':        [],
