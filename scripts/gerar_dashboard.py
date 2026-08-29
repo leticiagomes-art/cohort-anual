@@ -346,7 +346,7 @@ for p in prods:
     if not mad: continue
     tot = sum(r['g'] for r in mad)
     cohort_resumo[p] = {
-        'w0':     round(sum((r.get('W+0') or 0) * r['g'] for r in mad) / tot, 5),
+        'w0':     round(sum((r.get('W1') or 0) * r['g'] for r in mad) / tot, 5),
         'w4':     round(sum((r.get('W4')  or 0) * r['g'] for r in mad) / tot, 5),
         'w8':     round(sum((r.get('W8')  or 0) * r['g'] for r in mad) / tot, 5),
         'gross':  round(tot, 2),
@@ -439,6 +439,31 @@ print("→ Montando payload...")
 RF = sum(r['Valor reembolsado'] for r in mensal)
 CB = sum(r['Valor de chargeback'] for r in mensal)
 
+# fases da operacao de atendimento — a coluna 'fase' ja vem calculada pelo
+# analise_ano_tigeroffers.py em cada CSV; so falta agregar por fase.
+fases = []
+if 'fase' in ped_a.columns:
+    for fase, gg in ped_a.groupby('fase'):
+        g_  = float(gg['amount'].sum())
+        rv_ = float(ref_a.loc[ref_a['fase'] == fase, 'amount'].sum()) if 'fase' in ref_a.columns else 0.0
+        cv_ = float(cb_a.loc[cb_a['fase']   == fase, 'amount'].sum()) if 'fase' in cb_a.columns  else 0.0
+        fases.append({
+            'fase': fase, 'Gross': round(g_, 2),
+            'Valor reembolsado': round(rv_, 2), 'Valor de chargeback': round(cv_, 2),
+            '% Saida total ($)': sf((rv_ + cv_) / g_) if g_ else None,
+        })
+    fases.sort(key=lambda r: r['fase'])
+
+# casamento por Order ID contra a base de pedidos — checagem real, calculada
+# a cada execucao (a reconciliacao contra o Master Accounts oficial da
+# BuyGoods NAO esta automatizada: exigiria baixar e parsear o relatorio
+# Master Overview/Master Accounts em todo run, o que o pipeline nao faz hoje).
+ids_pedidos = set(ped_a['order_id'].dropna().astype(str))
+validacao = {
+    'casamentoReembolso': sf(ref_a['order_id'].astype(str).isin(ids_pedidos).mean()) if len(ref_a) else None,
+    'casamentoChargeback': sf(cb_a['order_id'].astype(str).isin(ids_pedidos).mean()) if len(cb_a) else None,
+}
+
 P = {
     'mensal':       mensal,
     'coorte':       mensal,   # mesma fonte, lida de forma diferente no front
@@ -452,10 +477,11 @@ P = {
     'produtos':     produtos,
     'bw':           [],
     'recon':        [],
+    'validacao':    validacao,
     'cobprod':      [],
     'valid':        [],
     'custos':       [],
-    'fases':        [],
+    'fases':        fases,
     'afiliados':    af_rows,
     'motivos':      motivos,
     'cohortProduto': {p: [{'Semana': r['sf'], 'Mes': r['s'][:7], 'Gross': r['g'],

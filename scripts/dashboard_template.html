@@ -321,18 +321,56 @@ function table(cols,rows,opts={}){
 const V={};
 const tot=k=>D.mensal.reduce((a,r)=>a+(N(r[k])||0),0);
 const G=tot('Gross'), RF=tot('Valor reembolsado'), CB=tot('Valor de chargeback');
+const MESES_ABREV=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+const [refAno,refMes,refDia]=(D.gerado_em||'').split('-').map(Number);
+const PERIODO=refDia?`01 jan → ${String(refDia).padStart(2,'0')} ${MESES_ABREV[refMes-1]} ${refAno} · 31 contas`
+                    :'01 jan → hoje · 31 contas';
 
 V.geral=()=>{
   const mm=D.mensal;
   const cards=[
-    {l:'Gross',v:moneyK(G),n:'oficial $20,13 mi · gap +1,3%',c:'is-navy',s:mm.map(r=>N(r.Gross)),col:'var(--navy)'},
-    {l:'Reembolso',v:moneyK(RF),n:pct(RF/G)+' do gross · oficial $3,67 mi',c:'is-red',s:mm.map(r=>N(r['Valor reembolsado'])),col:'var(--red)'},
-    {l:'Chargeback',v:moneyK(CB),n:pct(CB/G)+' do gross · estável o ano todo',c:'is-amber',s:mm.map(r=>N(r['Valor de chargeback'])),col:'var(--amber)'},
-    {l:'Saída total',v:pct((RF+CB)/G),n:'a cada $100 vendidos, $19 voltam',c:'is-red',s:mm.map(r=>N(r['% Saida total ($)'])),col:'var(--red)'}
+    {l:'Gross',v:moneyK(G),n:`${mm.length} meses · média ${moneyK(G/mm.length)}/mês`,c:'is-navy',s:mm.map(r=>N(r.Gross)),col:'var(--navy)'},
+    {l:'Reembolso',v:moneyK(RF),n:pct(RF/G)+' do gross no ano',c:'is-red',s:mm.map(r=>N(r['Valor reembolsado'])),col:'var(--red)'},
+    {l:'Chargeback',v:moneyK(CB),n:pct(CB/G)+' do gross no ano',c:'is-amber',s:mm.map(r=>N(r['Valor de chargeback'])),col:'var(--amber)'},
+    {l:'Saída total',v:pct((RF+CB)/G),n:`a cada $100 vendidos, $${Math.round((RF+CB)/G*100)} voltam`,c:'is-red',s:mm.map(r=>N(r['% Saida total ($)'])),col:'var(--red)'}
   ].map(k=>`<div class="card kpi ${k.c}"><div class="lab">${k.l}</div><div class="val">${k.v}</div>
     <div class="note">${k.n}</div><div class="spark">${spark(k.s,k.col)}</div></div>`).join('');
 
   const dec=D.decP.at(-1), sysAno=D.decV.reduce((a,r)=>a+(N(r['System (automatico BuyGoods)'])||0),0);
+
+  // fato 1: evolucao da taxa de reembolso mes a mes (primeiro vs ultimo mes com dado)
+  const rfSerie=mm.filter(r=>N(r['% Reembolso ($)'])!=null && N(r.Gross)>0);
+  const rf0=rfSerie[0], rf1=rfSerie.at(-1);
+  const rfVerbo=rf1 && rf0 && N(rf1['% Reembolso ($)'])>N(rf0['% Reembolso ($)'])?'subiu':'caiu';
+  const fato1=rf0&&rf1&&rf0!==rf1
+    ?[`O reembolso ${rfVerbo}`,`${pct(N(rf0['% Reembolso ($)']))} em ${mesLbl(rf0.mes)} → ${pct(N(rf1['% Reembolso ($)']))} em ${mesLbl(rf1.mes)}`,'t-red']
+    :['Reembolso por mês','ainda sem meses suficientes pra comparar','t-grey'];
+
+  // fato 2: taxa da 1a semana da compra (W+0 do cohort semanal), por mes de safra
+  const w0Mes={};
+  for(const r of D.cohort){
+    if(r['W+0']==null||!N(r.Gross))continue;
+    const m=r.Mes; w0Mes[m]=w0Mes[m]||{num:0,den:0};
+    w0Mes[m].num+=r['W+0']*r.Gross; w0Mes[m].den+=r.Gross;
+  }
+  const w0Serie=Object.entries(w0Mes).filter(([,v])=>v.den>0).sort(([a],[b])=>a<b?-1:1)
+    .map(([m,v])=>({mes:m,v:v.num/v.den}));
+  const w00=w0Serie[0], w01=w0Serie.at(-1);
+  const fato2=w00&&w01&&w00!==w01
+    ?['Velocidade da 1ª semana',`${mesLbl(w00.mes)} → ${mesLbl(w01.mes)}: ${pct(w00.v)} → ${pct(w01.v)}`,'t-red']
+    :['Velocidade da 1ª semana','ainda sem safras maduras suficientes','t-red'];
+
+  // fato 3 (ja era dinamico): decisao automatica
+  const fato3=['Quase não decidimos','o automático aprovou '+moneyK(sysAno)+' no ano','t-amber'];
+
+  // fato 4: quanto do motivo declarado NAO e chargeback (regex igual a barra "Motivo declarado")
+  const reCB=/chargeback|rdr|threat/i;
+  const totMot=D.motivos.reduce((a,m)=>a+(N(m.Total)||0),0);
+  const naoCB=D.motivos.filter(m=>!reCB.test(m.reason)).reduce((a,m)=>a+(N(m.Total)||0),0);
+  const fato4=totMot>0
+    ?[`${pct(naoCB/totMot,0)} não é chargeback`,`${moneyK(naoCB)} de arrependimento e upsell declarado`,'t-amber']
+    :['Motivo declarado','ainda sem base suficiente','t-amber'];
+
   return `<div class="grid g4">${cards}</div>
   <div class="sec">O que move o número</div>
   <div class="grid g23">
@@ -344,10 +382,7 @@ V.geral=()=>{
       ],{labels:mm.map(r=>mesLbl(r.mes)),min:0,max:32,fmtY:v=>v.toFixed(0)+'%',fmtT:v=>v.toFixed(1)+'%'})}</div>
     <div class="card"><h3>Os quatro fatos</h3><p class="cap">Cada um tem uma aba própria.</p>
       <div style="display:flex;flex-direction:column;gap:13px">
-        ${[['O reembolso dobrou','11,2% em fevereiro → 27,4% em agosto','t-red'],
-           ['E ficou mais rápido','na 1ª semana da compra: 3,6% → 8,4%','t-red'],
-           ['Quase não decidimos','o automático aprovou '+moneyK(sysAno)+' no ano','t-amber'],
-           ['57% não é chargeback','$2,10 mi de arrependimento e upsell','t-amber']].map(([t,s,c])=>
+        ${[fato1,fato2,fato3,fato4].map(([t,s,c])=>
           `<div><span class="tag ${c}">${t}</span><div style="font-size:12.5px;color:var(--ink-2);margin-top:5px">${s}</div></div>`).join('')}
       </div></div>
   </div>
@@ -685,14 +720,14 @@ V.motivos=()=>{
 V.produtos=()=>{
   const p=(D.todosProdutos||D.produtos).filter(r=>N(r.Gross)>0||N(r['Gross oficial'])>0);
   const pts=p.filter(r=>N(r['% Saida total ($)'])!=null&&N(r.Gross)>500).map(r=>({   // inclui todos
-    k:r.produto,x:N(r.Gross),y:N(r['% Saida total ($)']),r:N(r['Net oficial']),
-    color:N(r['Net oficial'])<0?'var(--red)':N(r['% Saida total ($)'])>=.22?'var(--amber)':'var(--blue)',
-    label:N(r.Gross)>800000||N(r['Net oficial'])<0}));
+    k:r.produto,x:N(r.Gross),y:N(r['% Saida total ($)']),r:N(r.Gross),
+    color:N(r['% Saida total ($)'])>=.30?'var(--red)':N(r['% Saida total ($)'])>=.20?'var(--amber)':'var(--blue)',
+    label:N(r.Gross)>800000||N(r['% Saida total ($)'])>=.30}));
   return `<div class="grid g32">
     <div class="card"><h3>Gross × taxa de saída</h3>
-      <p class="cap">Cada bolha é um produto com mais de $50 mil de gross. O tamanho é o Net oficial. Vermelho = Net negativo.</p>
+      <p class="cap">Cada bolha é um produto com mais de $500 de gross. O tamanho é o próprio Gross. Vermelho = saída acima de 30%.</p>
       ${scatter(pts,{w:700,h:360,ref:(RF+CB)/G})}</div>
-    <div class="card"><h3>Classificação</h3><p class="cap">Regra: Net oficial negativo, ou saída acima de 30%, ou base incompleta.</p>
+    <div class="card"><h3>Classificação</h3><p class="cap">Regra: saída (reembolso + chargeback) acima de 30% do gross = negativo, acima de 20% = atenção. Net oficial ainda não é calculado pelo pipeline automatizado.</p>
       ${['NEGATIVO','ATENCAO','POSITIVO','NEUTRO','NAO CLASSIFICADO'].map(c=>{
         const q=p.filter(r=>String(r.Classificacao||'').startsWith(c));
         if(!q.length)return'';
@@ -700,8 +735,13 @@ V.produtos=()=>{
         return `<div style="margin-bottom:13px"><span class="tag ${cls}">${c==='NAO CLASSIFICADO'?'sem classificação':c.toLowerCase()}</span>
           <span class="num" style="font-size:12px;color:var(--muted);margin-left:8px">${q.length} produtos · ${moneyK(q.reduce((a,r)=>a+N(r.Gross),0))}</span>
           <div style="font-size:12px;color:var(--ink-2);margin-top:5px">${q.slice(0,6).map(r=>r.produto).join(', ')}${q.length>6?'…':''}</div></div>`}).join('')}
-      <div class="alerta" style="margin-top:6px"><b>LipoVive é a decisão pendente.</b> $1,05 mi de faturamento, Net oficial negativo
-      e 29,7% de saída. Quinto maior da operação e o único dessa faixa no vermelho.</div></div>
+      ${(()=>{
+        const neg=p.filter(r=>String(r.Classificacao||'').startsWith('NEGATIVO')).sort((a,b)=>N(b.Gross)-N(a.Gross));
+        if(!neg.length)return'';
+        const pior=neg[0];
+        return `<div class="alerta" style="margin-top:6px"><b>${pior.produto} é a decisão pendente.</b> ${money(N(pior.Gross))} de faturamento
+        e ${pct(N(pior['% Saida total ($)']))} de saída — o maior faturamento entre os produtos no vermelho.</div>`;
+      })()}</div>
   </div>
   <div class="sec">Todos os produtos</div>
   ${table([
@@ -722,7 +762,7 @@ V.produtos=()=>{
   ],p.sort((a,b)=>N(b.Gross)-N(a.Gross)))}
   <div class="sec">Black × White</div>
   <p class="sub" style="margin:-6px 0 12px">Taxa de saída antes e depois da virada de funil, pela data do pedido. Só produtos com data configurada.</p>
-  ${table([
+  ${D.bw.length?table([
     {h:'Produto',get:r=>r.produto},
     {h:'Virada',get:r=>r['Data da virada']},
     {h:'Taxa Black',r:1,num:1,get:r=>pct(N(r['Taxa BLACK (mix 70/30)'])),sort:r=>N(r['Taxa BLACK (mix 70/30)'])??-1},
@@ -733,9 +773,10 @@ V.produtos=()=>{
     {h:'Dias de White',r:1,num:1,get:r=>N(r['Dias de White ate hoje'])??'—',sort:r=>N(r['Dias de White ate hoje'])||0},
     {h:'Veredito',get:r=>{const v=String(r.Veredito||'');const cls=/PIOROU/.test(v)?'t-red':/MELHOROU\?/.test(v)?'t-amber':/MELHOROU/.test(v)?'t-green':'t-grey';
       return `<span class="tag ${cls}">${/PIOROU/.test(v)?'piorou':/MELHOROU/.test(v)?'melhorou?':'—'}</span>`},sort:r=>String(r.Veredito)}
-  ],D.bw)}
-  <div class="note" style="margin-top:14px"><b>Não tire conclusão daqui ainda.</b> A janela White tem de 12 a 33 dias e a política de reembolso é de 60.
-  A taxa White sai baixa por construção, não necessariamente por mérito. MaroBrain é a exceção que interessa: piorou mesmo com janela curta.</div>`;
+  ],D.bw)
+  :`<div class="card"><p class="cap">A comparação Black × White (<code>VIRADA_BLACK_WHITE</code> em <code>analise_ano_tigeroffers.py</code>)
+    não é recalculada pelo <code>gerar_dashboard.py</code> — essa tabela fica vazia até alguém portar essa lógica pro
+    pipeline que gera este site.</p></div>`}`;
 };
 
 const NAO_AFIL='Sem Afiliado / Pedido Direto';
@@ -802,22 +843,23 @@ function filtAf(q,btn){
 }
 
 V.maxweb=()=>{
-  const m=D.maxweb, a=D.mwAgosto, lv=D.lipovive, pf=D.mwPerfil;
+  const m=D.maxweb;
+  if(!m.length) return `<div class="card"><h3>Sem dado de MaxWeb</h3>
+    <p class="cap">Nenhum afiliado com nome contendo "MaxWeb"/"MWE" foi encontrado no período.</p></div>`;
+  const ult=m.at(-1), prim=m[0];
   return `<div class="grid g4">
-    <div class="card kpi is-navy"><div class="lab">Gross em agosto</div><div class="val">${money(a.gross)}</div>
-      <div class="note">${a.pedidos} pedidos · +148% vs julho</div></div>
-    <div class="card kpi is-green"><div class="lab">Taxa limpa</div><div class="val">${pct(a.taxaLimpa)}</div>
-      <div class="note">bruta era ${pct(a.taxaBruta)} · resto da operação: 27,4%</div></div>
-    <div class="card kpi is-amber"><div class="lab">Compra teste</div><div class="val">${money(a.refundTeste)}</div>
-      <div class="note">12 dos 28 reembolsos · resto da operação: zero</div></div>
-    <div class="card kpi is-navy"><div class="lab">Peso na operação</div><div class="val">${pct(m.at(-1).peso)}</div>
-      <div class="note">era 16,5% em janeiro</div></div>
+    <div class="card kpi is-navy"><div class="lab">Gross no último mês (${mesLbl(ult.mes)})</div><div class="val">${money(ult.gross)}</div>
+      <div class="note">peso na operação: ${pct(ult.peso)}</div></div>
+    <div class="card kpi is-red"><div class="lab">Reembolso no último mês</div><div class="val">${money(ult.refund)}</div>
+      <div class="note">safra MaxWeb: ${pct(ult.safra)} · resto: ${pct(ult.safra_resto)}</div></div>
+    <div class="card kpi is-navy"><div class="lab">Peso em ${mesLbl(prim.mes)}</div><div class="val">${pct(prim.peso)}</div>
+      <div class="note">vs ${pct(ult.peso)} agora</div></div>
+    <div class="card kpi is-amber"><div class="lab">Meses com dado</div><div class="val">${m.length}</div>
+      <div class="note">${mesLbl(prim.mes)} a ${mesLbl(ult.mes)}</div></div>
   </div>
-  <div class="ok" style="margin-top:16px"><b>Agosto está ok e não pede ação.</b> A taxa de 26,9% é falsa: ${money(a.refundTeste)} dos ${money(a.refund)}
-  são compra teste de link, não cliente insatisfeito. Limpando, a MaxWeb fecha em ${pct(a.taxaLimpa)} contra 27,4% do resto da operação.</div>
-  <div class="sec">O canal encolheu, não piorou</div>
+  <div class="sec">Gross e taxa por mês</div>
   <div class="grid g23">
-    <div class="card"><h3>Gross e taxa por mês</h3><p class="cap">A taxa de caixa de junho e julho é artefato: o gross despencou e o reembolso das vendas antigas continuou caindo.</p>
+    <div class="card"><h3>Gross e taxa por mês</h3><p class="cap">Taxa da safra: reembolso da venda daquele mês, sobre o gross daquele mês (amadurece com o tempo).</p>
       ${lineChart([
         {name:'% da safra MaxWeb',values:m.map(r=>N(r.safra)*100),color:'var(--red)'},
         {name:'% da safra resto',values:m.map(r=>N(r.safra_resto)*100),color:'var(--muted)',dash:1}
@@ -826,68 +868,32 @@ V.maxweb=()=>{
       ${lineChart([{name:'gross',values:m.map(r=>N(r.gross)/1000),color:'var(--navy)',area:1}],
         {labels:m.map(r=>mesLbl(r.mes)),min:0,fmtY:v=>'$'+v.toFixed(0)+'k',fmtT:v=>'$'+v.toFixed(0)+' mil'})}</div>
   </div>
-  <div class="sec">O perfil de motivo é diferente do resto</div>
-  <div class="grid g2">
-    <div class="card"><h3>Natureza do reembolso, ano inteiro</h3>
-      <p class="cap">Base grande o bastante para afirmar: 1.388 reembolsos da MaxWeb contra 17.937 do resto.</p>
-      ${[['Produto não entregou o prometido','eficacia'],['Não concordou com os upsells','upsell'],['Ligado a chargeback','cb']].map(([lab,k])=>{
-        const mw=pf.MaxWeb[k], rs=pf.Resto[k], mx=Math.max(mw,rs);
-        return `<div style="margin-bottom:15px"><div style="font-size:12.5px;margin-bottom:6px">${lab}</div>
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-            <span style="font-size:10.5px;color:var(--muted);width:52px">MaxWeb</span>
-            <div style="flex:1;height:15px;background:var(--line-soft);border-radius:3px"><div style="width:${mw/mx*100}%;height:100%;background:var(--red);border-radius:3px"></div></div>
-            <span class="num" style="font-size:11.5px;width:48px;text-align:right">${pct(mw)}</span></div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span style="font-size:10.5px;color:var(--muted);width:52px">Resto</span>
-            <div style="flex:1;height:15px;background:var(--line-soft);border-radius:3px"><div style="width:${rs/mx*100}%;height:100%;background:var(--c1);border-radius:3px"></div></div>
-            <span class="num" style="font-size:11.5px;width:48px;text-align:right">${pct(rs)}</span></div></div>`}).join('')}
-      <div class="note">"Não funcionou" é 10,4% na MaxWeb contra 3,5% no resto. "Médico desaconselhou" 8,2% contra 3,3%.
-      Isso não é cobrança — é promessa de criativo acima do que o produto entrega.</div></div>
-    <div class="card"><h3>LipoVive: metade é MaxWeb</h3>
-      <p class="cap">O produto com Net oficial negativo, e a rede que o sustentava saiu.</p>
-      <div class="dl" style="grid-template-columns:170px 1fr">
-        <dt>Gross do produto</dt><dd class="num">${money(lv.gross)}</dd>
-        <dt>Da MaxWeb</dt><dd class="num">${money(lv.grossMW)} · ${pct(lv.grossMW/lv.gross,0)} do produto</dd>
-        <dt>Saída MaxWeb</dt><dd class="num" style="color:var(--green)">${pct(lv.taxaMW)}</dd>
-        <dt>Saída dos demais</dt><dd class="num" style="color:var(--red)">${pct(lv.taxaOutros)}</dd>
-      </div>
-      ${lineChart([{name:'gross LipoVive MaxWeb',values:lv.mensalMW.map(r=>N(r.gross)/1000),color:'var(--teal)',area:1}],
-        {labels:lv.mensalMW.map(r=>mesLbl(r.mes)),min:0,h:190,fmtY:v=>'$'+v.toFixed(0)+'k',fmtT:v=>'$'+v.toFixed(0)+' mil'})}
-      <div class="alerta" style="margin-top:12px"><b>A MaxWeb rodava o LipoVive melhor que os outros e parou.</b>
-      O que sobrou no produto é a metade pior. Antes de decidir matar o LipoVive, entender por que eles saíram.</div></div>
-  </div>
-  <div class="sec">Motivos da MaxWeb em agosto</div>
-  <p class="sub" style="margin:-6px 0 12px">28 linhas apenas — leitura direcional, não conclusiva.</p>
-  ${table([
-    {h:'Motivo',get:r=>r.reason},
-    {h:'Valor',r:1,num:1,get:r=>money(N(r.valor)),sort:r=>N(r.valor),bar:r=>N(r.valor)/N(a.motivos[0].valor)},
-    {h:'Natureza',get:r=>/Test order/i.test(r.reason)?'<span class="tag t-grey">operacional</span>'
-      :/chargeback|threat/i.test(r.reason)?'<span class="tag t-amber">chargeback</span>':'<span class="tag t-blue">cliente</span>'}
-  ],a.motivos)}
-  <div class="sec">O que levar para a conversa</div>
-  <div class="grid g3">
-    ${[['Confirmar as compras teste','As 12 de agosto são todas da MaxWeb; o resto da operação teve zero. Se não for validação de funil de vocês, alguém está testando link sem avisar.'],
-       ['Levar o perfil de motivo','35% dos reembolsos da rede são de eficácia e expectativa, contra 13,3% do resto. É conversa de criativo, não de cobrança.'],
-       ['Perguntar sobre o LipoVive','Eles rodavam com 22,2% de saída contra 34,3% dos demais, e pararam. O motivo da saída muda a decisão sobre o produto.']]
-      .map(([t,d])=>`<div class="card"><h3>${t}</h3><div style="font-size:12.5px;color:var(--ink-2);line-height:1.6;margin-top:8px">${d}</div></div>`).join('')}
-  </div>`;
+  <div class="note" style="margin-top:16px"><b>A investigação de agosto (compra teste, perfil de motivo, recorte do LipoVive) era uma
+  análise manual pontual e não está sendo recalculada pelo pipeline automatizado</b> — os campos que a alimentavam
+  (<code>mwAgosto</code>, <code>mwPerfil</code>, <code>lipovive</code>) nunca foram conectados ao <code>gerar_dashboard.py</code>,
+  então essa aba quebrava com um erro de JavaScript ao abrir. Os números acima (gross/reembolso/peso por mês) são reais e
+  recalculados a cada execução; se quiser reconstruir a investigação de motivo/LipoVive de forma automática, isso é uma
+  tarefa separada — precisa decidir a taxonomia de motivos e como isolar "compra teste" nos dados.</div>`;
 };
 
 V.dados=()=>{
   const rc=D.recon.filter(r=>N(r['Gross oficial'])>0);
   const so=rc.reduce((a,r)=>a+(N(r['Reembolso oficial'])||0),0), sc=rc.reduce((a,r)=>a+(N(r['Reembolso calculado'])||0),0);
+  const val=D.validacao||{};
   return `<div class="grid g4">
-    <div class="card kpi is-green"><div class="lab">Gap no reembolso</div><div class="val">${pct(Math.abs(so-sc)/so,1)}</div>
-      <div class="note">calculado vs Master Accounts oficial</div></div>
-    <div class="card kpi is-green"><div class="lab">Casamento por Order ID</div><div class="val">88,2%</div>
-      <div class="note">reembolsos ligados à base de pedidos</div></div>
-    <div class="card kpi is-amber"><div class="lab">Duplicidade removida</div><div class="val">$26.375</div>
-      <div class="note">82 chargebacks dentro do arquivo de reembolso</div></div>
+    ${rc.length?`<div class="card kpi is-green"><div class="lab">Gap no reembolso</div><div class="val">${pct(Math.abs(so-sc)/(so||1),1)}</div>
+      <div class="note">calculado vs Master Accounts oficial</div></div>`
+      :`<div class="card kpi is-navy"><div class="lab">Gap no reembolso</div><div class="val">—</div>
+      <div class="note">reconciliação contra o Master Accounts oficial não é automatizada ainda</div></div>`}
+    <div class="card kpi is-green"><div class="lab">Casamento por Order ID</div><div class="val">${val.casamentoReembolso==null?'—':pct(val.casamentoReembolso)}</div>
+      <div class="note">reembolsos com order_id achado na base de pedidos</div></div>
+    <div class="card kpi is-navy"><div class="lab">Casamento chargeback</div><div class="val">${val.casamentoChargeback==null?'—':pct(val.casamentoChargeback)}</div>
+      <div class="note">chargebacks com order_id achado na base de pedidos</div></div>
     <div class="card kpi is-navy"><div class="lab">Contas conferidas</div><div class="val">${rc.length}</div>
       <div class="note">uma a uma contra o oficial</div></div>
   </div>
   <div class="sec">Reconciliação conta a conta</div>
-  ${table([
+  ${rc.length?table([
     {h:'Conta',get:r=>r['Conta (oficial)']},
     {h:'Gross oficial',r:1,num:1,get:r=>money(N(r['Gross oficial'])),sort:r=>N(r['Gross oficial'])||0},
     {h:'Gross calculado',r:1,num:1,get:r=>money(N(r['Gross calculado'])),sort:r=>N(r['Gross calculado'])||0},
@@ -896,13 +902,21 @@ V.dados=()=>{
     {h:'Gap',r:1,num:1,get:r=>{const v=N(r['% do gap de reembolso']);
       return v==null?'—':`<span style="color:${Math.abs(v)>.1?'var(--amber)':'var(--green)'}">${(v*100).toFixed(1).replace('.',',')}%</span>`},
       sort:r=>Math.abs(N(r['% do gap de reembolso'])??0)}
-  ],rc.sort((a,b)=>N(b['Gross oficial'])-N(a['Gross oficial'])))}
+  ],rc.sort((a,b)=>N(b['Gross oficial'])-N(a['Gross oficial'])))
+  :`<div class="card"><p class="cap">O pipeline automatizado não baixa nem faz o parse do relatório Master Overview/Master
+    Accounts da BuyGoods a cada execução — só o export por conta (Order Items/Refunds/Chargebacks). Reconciliar conta a
+    conta contra o oficial exige adicionar esse download ao <code>baixar_exports.py</code> e ligar a saída ao
+    <code>gerar_dashboard.py</code>. Hoje essa comparação é manual, quando alguém baixa o relatório oficial à parte.</p></div>`}
   <div class="sec">Verificações executadas</div>
-  ${table([
+  ${D.valid.length?table([
     {h:'Verificação',get:r=>r.Verificacao},
     {h:'Resultado',get:r=>`<b>${r.Resultado}</b>`},
     {h:'Detalhe',get:r=>`<span style="white-space:normal;display:block;max-width:620px;color:var(--ink-2)">${String(r.Detalhe||'').slice(0,300)}</span>`}
-  ],D.valid)}
+  ],D.valid)
+  :`<div class="card"><p class="cap">As verificações detalhadas (<code>validar()</code> em <code>analise_ano_tigeroffers.py</code>) rodam
+    e geram um relatório Excel próprio, mas esse relatório não é lido pelo <code>gerar_dashboard.py</code> — por isso essa
+    tabela fica vazia no site. Os dois números de casamento por Order ID acima são calculados direto aqui, com os
+    mesmos dados do dashboard.</p></div>`}
   <div class="sec">O que este painel não permite afirmar</div>
   <div class="grid g3">
     ${[['Chargeback por motivo','O export não traz data do estorno, nem Agent Name, nem Reason. A única data é Order Date, que aparece 27 dias após o pedido — provavelmente é a data do estorno, mas precisa de confirmação da BuyGoods.'],
@@ -914,13 +928,13 @@ V.dados=()=>{
 
 /* ---------------- router ---------------- */
 const META={
-  geral:['Onde o dinheiro está vazando','Reembolso e chargeback de 01/01 a 26/08/2026, reconciliado contra o Master Accounts oficial da BuyGoods.'],
+  geral:['Onde o dinheiro está vazando',`Reembolso e chargeback de 01/01 a ${PERIODO.split(' → ')[1].split(' · ')[0]}.`],
   evolucao:['Evolução no tempo','A mesma série lida de duas formas: pelo caixa e pela safra. As duas respondem perguntas diferentes.'],
   cohort:['Cohort semanal','Quanto de cada semana de vendas volta como reembolso, e em quanto tempo.'],
   decisao:['Quem decide o reembolso','Participação do automático e dos agentes humanos, e a validação do período pós-17/08.'],
   motivos:['Por que o cliente pede de volta','Motivo declarado no log de reembolso, agrupado por natureza.'],
   produtos:['Produtos','Onde o resultado se sustenta, onde exige decisão, e o efeito da virada Black → White.'],
-  afiliados:['Afiliados','704 afiliados externos com venda em 2026. Progressão mês a mês e concentração de risco.'],
+  afiliados:['Afiliados',`${D.afiliados.length} afiliados externos com venda em 2026. Progressão mês a mês e concentração de risco.`],
   maxweb:['MaxWeb','Variação de agosto, motivos e a relação com o LipoVive.'],
   dados:['Qualidade do dado','O que sustenta cada número deste painel e o que ele não permite afirmar.']
 };
@@ -930,8 +944,18 @@ function bindTips(){$$('.pt').forEach(p=>{
 function go(v){
   $$('.nav').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.v===v)));
   const [t,s]=META[v];
+  let body;
+  try{
+    body=V[v]();
+  }catch(e){
+    console.error('Falha ao renderizar a aba', v, e);
+    body=`<div class="card"><h3>Esta aba não carregou</h3>
+      <p class="cap">Erro ao montar a visão "${t}". Isso não afeta as outras abas — os dados que faltam aqui ainda
+      não estão sendo gerados pelo pipeline automatizado.</p>
+      <div class="note" style="margin-top:8px;font-family:monospace">${(e&&e.message)||e}</div></div>`;
+  }
   $('#main').innerHTML=`<div class="head"><div><h1>${t}</h1><p class="sub">${s}</p></div>
-    <div class="periodo">01 jan → 26 ago 2026 · 31 contas</div></div><div class="view on">${V[v]()}</div>`;
+    <div class="periodo">${PERIODO}</div></div><div class="view on">${body}</div>`;
   if(v==='cohort'){setCoh($('#main .ctl .btn'),false);setCoh($('#main .cbp[aria-pressed="true"]')||$('#main .cbp'),true);}
   bindTips();
   window.scrollTo(0,0);
