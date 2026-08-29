@@ -586,20 +586,29 @@ window.setCoh=(btn,isCB)=>{
 V.decisao=()=>{
   const sv=D.salvamento;
   const svGet=k=>sv[k]||{n:0,salvos:0,taxaSalvo:0,retido:0,ticket:0};
+  // Regra: so Leticia Gomes e Mari Alves sao time interno da Tiger. Qualquer
+  // outro agente humano (BuyGoods) entra no mesmo balde "Humano" pra manter
+  // a leitura em 2 grupos: quem decide sem revisao (System) x quem decide
+  // com julgamento humano (Tiger + BuyGoods juntos).
+  const humanoV=r=>(N(r['Agente BuyGoods'])||0)+(N(r['Agente Tiger (CS interno)'])||0);
   const rows=D.decP.map(r=>({k:mesLbl(r.mes),parts:[
-    {name:'Agente humano BuyGoods',v:N(r['Agente BuyGoods'])||0,color:'var(--c1)',dark:1},
-    {name:'CS interno TigerOffers',v:N(r['Agente Tiger (CS interno)'])||0,color:'var(--green)'},
+    {name:'Humano',v:humanoV(r),color:'var(--c1)',dark:1},
     {name:'System automático',v:N(r['System (automatico BuyGoods)'])||0,color:'var(--red)'}]}));
+  const tigerAno=D.decV.reduce((a,r)=>a+(N(r['Agente Tiger (CS interno)'])||0),0);
+  const humanoAno=D.decV.reduce((a,r)=>a+humanoV(r),0);
+  const sysAno=D.decV.reduce((a,r)=>a+(N(r['System (automatico BuyGoods)'])||0),0);
+  const totAno=humanoAno+sysAno;
+  const dp0=D.decP[0], dp1=D.decP.at(-1);
+  const sysPct=r=>N(r['System (automatico BuyGoods)']);
   const sw=D.sysSemana, ref=D.sysRef, p=D.pos17;
   return `<div class="grid g23">
     <div class="card"><h3>Quem aprova o reembolso</h3>
-      <p class="cap">Participação no valor reembolsado por tipo de agente, campo Agent Name do log.</p>
+      <p class="cap">Participação no valor reembolsado: System (automático) vs. agente humano. Campo Agent Name do log.</p>
       ${stackedPct(rows,{w:660,h:300})}</div>
-    <div class="card"><h3>A virada de maio</h3><p class="cap">O que mudou na política, não no volume.</p>
-      <div class="alerta"><b>Até abril, ~68% do valor passava por um humano.</b> Havia conversa, reembolso parcial,
-      chance de salvar a venda. De maio em diante o automático assume: 64%, 81%, 84%, 81%.</div>
-      <div style="margin-top:14px" class="note"><b>${moneyK(D.decV.reduce((a,r)=>a+(N(r['System (automatico BuyGoods)'])||0),0))}</b>
-      foram decididos pelo System no ano — 63% do total, sem nenhuma intervenção possível do nosso lado.</div></div>
+    <div class="card"><h3>Automático vs. humano no ano</h3><p class="cap">${dp0&&dp1&&dp0!==dp1?`De ${mesLbl(dp0.mes)} a ${mesLbl(dp1.mes)}: ${pct(sysPct(dp0))} → ${pct(sysPct(dp1))} decidido pelo System.`:'Participação do System ao longo do ano.'}</p>
+      <div class="alerta"><b>${pct(sysAno/totAno)} do valor do ano foi decidido pelo System</b> — sem nenhuma intervenção humana possível.</div>
+      <div style="margin-top:14px" class="note"><b>${moneyK(tigerAno)}</b> (${pct(totAno?tigerAno/totAno:0)} do total) foram decididos pela Tiger (Letícia Gomes / Mari Alves);
+      o resto do valor humano é agente BuyGoods.</div></div>
   </div>
   <div class="sec">O System caiu depois de 17/08?</div>
   <div class="grid g23">
@@ -724,31 +733,7 @@ V.motivos=()=>{
 
 V.produtos=()=>{
   const p=(D.todosProdutos||D.produtos).filter(r=>N(r.Gross)>0||N(r['Gross oficial'])>0);
-  const pts=p.filter(r=>N(r['% Saida total ($)'])!=null&&N(r.Gross)>500).map(r=>({   // inclui todos
-    k:r.produto,x:N(r.Gross),y:N(r['% Saida total ($)']),r:N(r.Gross),
-    color:N(r['% Saida total ($)'])>=.30?'var(--red)':N(r['% Saida total ($)'])>=.20?'var(--amber)':'var(--blue)',
-    label:N(r.Gross)>800000||N(r['% Saida total ($)'])>=.30}));
-  return `<div class="grid g32">
-    <div class="card"><h3>Gross × taxa de saída</h3>
-      <p class="cap">Cada bolha é um produto com mais de $500 de gross. O tamanho é o próprio Gross. Vermelho = saída acima de 30%.</p>
-      ${scatter(pts,{w:700,h:360,ref:(RF+CB)/G})}</div>
-    <div class="card"><h3>Classificação</h3><p class="cap">Regra: saída (reembolso + chargeback) acima de 30% do gross = negativo, acima de 20% = atenção. Net oficial ainda não é calculado pelo pipeline automatizado.</p>
-      ${['NEGATIVO','ATENCAO','POSITIVO','NEUTRO','NAO CLASSIFICADO'].map(c=>{
-        const q=p.filter(r=>String(r.Classificacao||'').startsWith(c));
-        if(!q.length)return'';
-        const cls=c==='NEGATIVO'?'t-red':c==='ATENCAO'?'t-amber':c==='POSITIVO'?'t-green':'t-grey';
-        return `<div style="margin-bottom:13px"><span class="tag ${cls}">${c==='NAO CLASSIFICADO'?'sem classificação':c.toLowerCase()}</span>
-          <span class="num" style="font-size:12px;color:var(--muted);margin-left:8px">${q.length} produtos · ${moneyK(q.reduce((a,r)=>a+N(r.Gross),0))}</span>
-          <div style="font-size:12px;color:var(--ink-2);margin-top:5px">${q.slice(0,6).map(r=>r.produto).join(', ')}${q.length>6?'…':''}</div></div>`}).join('')}
-      ${(()=>{
-        const neg=p.filter(r=>String(r.Classificacao||'').startsWith('NEGATIVO')).sort((a,b)=>N(b.Gross)-N(a.Gross));
-        if(!neg.length)return'';
-        const pior=neg[0];
-        return `<div class="alerta" style="margin-top:6px"><b>${pior.produto} é a decisão pendente.</b> ${money(N(pior.Gross))} de faturamento
-        e ${pct(N(pior['% Saida total ($)']))} de saída — o maior faturamento entre os produtos no vermelho.</div>`;
-      })()}</div>
-  </div>
-  <div class="sec">Todos os produtos</div>
+  return `<div class="sec">Todos os produtos</div>
   ${table([
     {h:'Produto',get:r=>r.produto},
     {h:'Pedidos',r:1,num:1,get:r=>N(r.Pedidos)?.toLocaleString('pt-BR')??'—',sort:r=>N(r.Pedidos)||0},

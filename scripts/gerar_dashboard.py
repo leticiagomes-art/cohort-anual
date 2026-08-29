@@ -106,6 +106,18 @@ for d in (ped, ref, cb):
     if 'data_evento' in d.columns:
         d['data_evento'] = pd.to_datetime(d['data_evento'], errors='coerce', format='mixed')
 
+# data_evento do reembolso e, por definicao, o refund_date (ver enriquecer()
+# em analise_ano_tigeroffers.py: data_evento = base[refund_date]). Mas
+# 6.124 das 6.147 linhas tinham data_evento NULO no CSV historico mesmo com
+# refund_date preenchido — essas linhas foram escritas por uma versao do
+# pipeline anterior a essa coluna existir, e o merge_csvs.py so concatena,
+# nunca recalcula colunas derivadas de linha antiga. Isso fazia TODO cohort
+# de reembolso (W+0..W+12) dar ~0: o join por semana so via os 23 eventos
+# "novos" que tinham data_evento preenchida. Recalcular sempre a partir do
+# refund_date (que esta 100% preenchido) resolve pra sempre.
+if 'refund_date' in ref.columns:
+    ref['data_evento'] = pd.to_datetime(ref['refund_date'], errors='coerce', format='mixed')
+
 # âncora: última data com dado nos arquivos (não data de hoje)
 DATA_REF = ped['data_pedido'].max().normalize()
 ANO      = DATA_REF.year
@@ -118,6 +130,35 @@ cb_a  = cb[cb['data_pedido'].dt.year  == ANO].copy()
 # semana_ini já está nos CSVs — garantir dtype
 for d in (ped_a, ref_a, cb_a):
     d['semana_ini'] = pd.to_datetime(d['semana_ini'], errors='coerce')
+    if 'semana_pedido_ini' in d.columns:
+        d['semana_pedido_ini'] = pd.to_datetime(d['semana_pedido_ini'], errors='coerce')
+
+# tipo_agente: RECALCULAR sempre a partir da coluna crua 'agent', nunca
+# confiar no 'tipo_agente' ja gravado no CSV historico.
+#
+# 99,6% dos reembolsos (6.124 de 6.147) tinham tipo_agente NULO mesmo com
+# 'agent' preenchido — o merge_csvs.py so concatena, nunca recalcula
+# colunas derivadas pras linhas antigas, entao qualquer linha escrita antes
+# dessa coluna existir (ou antes de uma correcao nela) fica presa como NaN
+# pra sempre. Isso fazia "Quem decide" ser montado com uma amostra de 23
+# linhas ($4,5 mil) em vez do reembolso inteiro do ano.
+#
+# So Leticia Gomes e Mari Alves sao time interno da Tiger; qualquer outro
+# nome/sigla de humano e agente da BuyGoods.
+AGENTES_TIGER = {"mari alves", "marialves", "leticia gomes", "leticiagomes"}
+
+def classificar_agente(nome):
+    n = norm(nome)
+    if n in ("", "nan", "none", "null", "system", "systemautomatic",
+              "auto", "automatic", "automated"):
+        return "System (automatico BuyGoods)"
+    if n in AGENTES_TIGER:
+        return "Agente Tiger (CS interno)"
+    return "Agente BuyGoods"
+
+for d in (ref_a, cb_a):
+    if 'agent' in d.columns:
+        d['tipo_agente'] = d['agent'].map(classificar_agente)
 
 # ── 2. AOV dos relatórios de afiliados ───────────────────────────────────────
 print("→ Carregando AOV...")
@@ -353,7 +394,14 @@ def mk_cohort(ped_b, ev_b, max_w=12):
         g  = float(pp['amount'].sum())
         if g < 1: continue
         d_ = int((DATA_REF - sem).days // 7)
-        ev_sem = ev_b[ev_b['semana_ini'] == sem]
+        # semana_pedido_ini (semana do PEDIDO), nao semana_ini (semana do
+        # EVENTO) — sao datas diferentes pra reembolso/chargeback, e usar a
+        # errada aqui fazia o cohort inteiro dar ~0: o join so "acertava"
+        # quando o reembolso, por coincidencia, acontecia na mesma semana
+        # do calendario que a safra sendo iterada, em vez de olhar reembolsos
+        # de QUALQUER semana que pertencam a essa safra de pedidos.
+        col_sem_evento = 'semana_pedido_ini' if 'semana_pedido_ini' in ev_b.columns else 'semana_ini'
+        ev_sem = ev_b[ev_b[col_sem_evento] == sem]
         ws = {}
         for w in range(1, max_w + 1):
             wf  = sem + pd.Timedelta(weeks=w)
