@@ -12,6 +12,9 @@ entrada/*.json
 saida/
 data/new/
 
+# build local do ExtratorBuyGoods.exe (PyInstaller) — nunca commitar o .exe
+dist_exe/
+
 # Python
 __pycache__/
 *.pyc

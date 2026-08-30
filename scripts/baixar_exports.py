@@ -28,7 +28,14 @@ except ImportError:
     sys.exit(1)
 
 # ── config ────────────────────────────────────────────────────────────────────
-ROOT    = Path(__file__).resolve().parent.parent
+# Rodando como .exe empacotado (PyInstaller): sys.frozen existe e __file__
+# aponta pra uma pasta temporaria de extracao, nao pro repositorio. Nesse
+# caso ROOT vira a pasta onde o .exe foi colocado — entrada/, data/,
+# diagnostico/ e accounts.json ficam todos ao lado do executavel.
+if getattr(sys, 'frozen', False):
+    ROOT = Path(sys.executable).resolve().parent
+else:
+    ROOT = Path(__file__).resolve().parent.parent
 ENTRADA = ROOT / "entrada"
 ENTRADA.mkdir(exist_ok=True)
 
@@ -41,17 +48,61 @@ SO_UMA    = os.environ.get('SO_UMA', '')             # testar 1 conta só
 VIDEO_DIR = ROOT / "diagnostico" / "video"
 TRACE_DIR = ROOT / "diagnostico"
 
+# Uso local/interativo (o .exe rodado manualmente no PC): se as credenciais
+# nao vierem por variavel de ambiente, pergunta no console SO quando o login
+# de fato for necessario (ver garantir_credenciais(), chamado antes de
+# login() em main() — a sessao salva em entrada/.sessao.json normalmente
+# evita precisar de credencial toda vez). No CI (GitHub Actions)
+# BG_EMAIL/BG_PASSWORD sempre vem preenchido via Secret, entao esse prompt
+# nunca aparece la. O try/except cobre um stdin que se anuncia como tty mas
+# nao tem entrada de verdade — sem isso o EOFError do input() derrubava o
+# programa com traceback cru.
+def _pausa_final():
+    """'Pressione Enter' antes de fechar a janela do console do .exe — sempre
+    protegido contra EOFError (stdin as vezes se anuncia como tty sem ter
+    entrada de verdade por tras, dependendo de como o .exe foi lançado)."""
+    if sys.stdin.isatty():
+        try:
+            input("\nPressione Enter para fechar...")
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+def _pedir(prompt, oculto=False):
+    try:
+        if not sys.stdin.isatty():
+            return ''
+        import getpass
+        return (getpass.getpass(prompt) if oculto else input(prompt)).strip()
+    except (EOFError, KeyboardInterrupt):
+        return ''
+
+def garantir_credenciais():
+    global EMAIL, PASSWORD
+    if not EMAIL:
+        EMAIL = _pedir("Email BuyGoods: ")
+    if not PASSWORD:
+        PASSWORD = _pedir("Senha BuyGoods: ", oculto=True)
+    if not EMAIL or not PASSWORD:
+        print("ERRO: sessao salva expirou e faltou credencial nova. "
+              "Defina BG_EMAIL/BG_PASSWORD ou informe quando solicitado.")
+        _pausa_final()
+        sys.exit(1)
+
 _env = os.environ.get('BG_ACCOUNTS', '')
 if _env:
     CONTAS = {k: v for k, v in json.loads(_env).items()
               if v and not str(k).startswith('_')}
 else:
-    _f = ROOT / "scripts" / "accounts.json"
-    if _f.exists():
+    _candidatos = [ROOT / "scripts" / "accounts.json", ROOT / "accounts.json"]
+    _f = next((c for c in _candidatos if c.exists()), None)
+    if _f:
         CONTAS = {k: v for k, v in json.loads(_f.read_text()).items()
                   if v and not str(k).startswith('_')}
     else:
-        print("ERRO: defina BG_ACCOUNTS ou crie scripts/accounts.json")
+        print(f"ERRO: defina BG_ACCOUNTS ou crie accounts.json em: {ROOT}")
+        print('Formato: {"NomeDaConta": 12345, ...} — o numero e o account_id da URL '
+              'admin.buygoods.com/<numero>')
+        _pausa_final()
         sys.exit(1)
 
 DATA_FIM = datetime.utcnow()
@@ -840,9 +891,7 @@ def aguardar_e_baixar(page, account_id, nome_conta, tipo, timeout_s=300):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 def main():
-    if not EMAIL or not PASSWORD:
-        print("ERRO: BG_EMAIL / BG_PASSWORD não definidos")
-        sys.exit(1)
+    garantir_credenciais()
 
     log(f"BuyGoods | {DATA_INI.strftime(FMT_FILE)} → {DATA_FIM.strftime(FMT_FILE)} | "
         f"{len(CONTAS)} contas | DEBUG_DOM={DEBUG_DOM}")
@@ -851,7 +900,7 @@ def main():
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
-            headless=True,
+            headless=os.environ.get('HEADLESS', '1') != '0',
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
         )
         # viewport grande: a BuyGoods esconde a barra de ações em telas estreitas,
@@ -879,6 +928,7 @@ def main():
         # se a sessão salva ainda vale, pula o login
         page.goto(f"{BASE}/10495#default", wait_until="networkidle", timeout=20_000)
         if "/login" in page.url:
+            garantir_credenciais()
             login(page)
             try:
                 ctx.storage_state(path=str(STORAGE))
@@ -957,4 +1007,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # Rodando como .exe: a janela do console fecha sozinha assim que o
+        # script termina, e some antes de dar pra ler o resultado. Pausa so
+        # nesse caso (nao no CI, onde nao ha console interativo pra travar).
+        if getattr(sys, 'frozen', False):
+            _pausa_final()
