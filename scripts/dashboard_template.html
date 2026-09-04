@@ -41,7 +41,7 @@ body{background:var(--canvas);color:var(--ink);font-family:var(--fb);font-size:1
 .nav[aria-selected="true"] .dot{background:var(--gold);opacity:1}
 .railfoot{padding:16px 20px;margin-top:14px;border-top:1px solid rgba(255,255,255,.09);font-size:10.5px;color:#7089B0;line-height:1.6}
 
-.main{padding:26px 30px 60px;max-width:1560px}
+.main{padding:26px 30px 60px;max-width:1560px;min-width:0}
 .head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:22px;flex-wrap:wrap}
 h1{font-family:var(--fd);font-size:25px;font-weight:700;letter-spacing:-.5px;margin:0 0 5px}
 .sub{color:var(--muted);font-size:13px;margin:0;max-width:760px}
@@ -291,13 +291,16 @@ function spark(vals,color){
 /* ---------------- sortable table ---------------- */
 function table(cols,rows,opts={}){
   const id='t'+Math.random().toString(36).slice(2,7);
-  const head=cols.map((c,i)=>`<th class="${c.r?'r':''}" data-i="${i}">${c.h}<span class="ar">↕</span></th>`).join('');
-  const body=rows.map(r=>'<tr>'+cols.map(c=>{
+  const stCol=(c,bg)=>c.sticky?`position:sticky;left:0;z-index:${bg?3:1};background:${bg||'var(--surface)'};`:'';
+  const head=cols.map((c,i)=>`<th class="${c.r?'r':''}" data-i="${i}" style="${stCol(c,'var(--blue)')}">${c.h}<span class="ar">↕</span></th>`).join('');
+  const rowHtml=r=>'<tr>'+cols.map(c=>{
     const v=c.get(r);
     const cls=(c.r?'r ':'')+(c.num?'num ':'');
+    const st=stCol(c);
     if(c.bar!=null){const p=Math.max(0,Math.min(1,c.bar(r)))*100;
-      return `<td class="${cls}bar-cell"><i style="width:${p}%"></i><span>${v}</span></td>`}
-    return `<td class="${cls}">${v}</td>`}).join('')+'</tr>').join('');
+      return `<td class="${cls}bar-cell" style="${st}"><i style="width:${p}%"></i><span>${v}</span></td>`}
+    return `<td class="${cls}" style="${st}">${v}</td>`}).join('')+'</tr>';
+  const body=rows.map(rowHtml).join('');
   setTimeout(()=>{
     const t=$('#'+id); if(!t)return;
     $$('th',t).forEach(th=>th.onclick=()=>{
@@ -307,11 +310,7 @@ function table(cols,rows,opts={}){
         const a=c.sort?c.sort(x):c.get(x), b=c.sort?c.sort(y):c.get(y);
         if(typeof a==='number'&&typeof b==='number')return (a-b)*dir;
         return String(a).localeCompare(String(b),'pt-BR')*dir});
-      tb.innerHTML=sorted.map(r=>'<tr>'+cols.map(c=>{
-        const v=c.get(r), cls=(c.r?'r ':'')+(c.num?'num ':'');
-        if(c.bar!=null){const p=Math.max(0,Math.min(1,c.bar(r)))*100;
-          return `<td class="${cls}bar-cell"><i style="width:${p}%"></i><span>${v}</span></td>`}
-        return `<td class="${cls}">${v}</td>`}).join('')+'</tr>').join('');
+      tb.innerHTML=sorted.map(rowHtml).join('');
     });
   },0);
   return `<div class="tw"><table id="${id}"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
@@ -770,66 +769,78 @@ V.produtos=()=>{
 };
 
 const NAO_AFIL='Sem Afiliado / Pedido Direto';
+const AF_MESES=['2026-01','2026-02','2026-03','2026-04','2026-05','2026-06','2026-07','2026-08'];
+function afRows(){return D.afiliados.filter(r=>(N(r['Gross total'])>0||r.aov_white)&&r.Afiliado!==NAO_AFIL)}
 V.afiliados=()=>{
   const direto=D.afiliados.find(r=>r.Afiliado===NAO_AFIL);
-  const a=D.afiliados.filter(r=>(N(r['Gross total'])>0||r.aov_white)&&r.Afiliado!==NAO_AFIL);
+  const a=afRows();
   const st={}; a.forEach(r=>{const k=String(r.Status||'—').split(' (')[0];st[k]=(st[k]||0)+1});
   const crit=a.filter(r=>/CRITICO/.test(String(r['Alerta de qualidade']||'')));
   const cards=[
-    {l:'Pararam',v:st['PAROU']||0,n:'mais de 30 dias sem vender',c:'is-red'},
-    {l:'Esfriando',v:st['ESFRIANDO']||0,n:'de 7 a 30 dias parados',c:'is-amber'},
-    {l:'Ativos',v:(st['CRESCENDO']||0)+(st['ESTAVEL']||0)+(st['CAINDO']||0),n:`${st['CRESCENDO']||0} crescendo · ${st['CAINDO']||0} caindo`,c:'is-green'},
-    {l:'Saída ≥30%',v:crit.length,n:moneyK(crit.reduce((s,r)=>s+N(r['Gross total']),0))+' de gross',c:'is-red'}
-  ].map(k=>`<div class="card kpi ${k.c}"><div class="lab">${k.l}</div>
-    <div class="val">${k.v}</div><div class="note">${k.n}</div></div>`).join('');
-  const meses=['2026-01','2026-02','2026-03','2026-04','2026-05','2026-06','2026-07','2026-08'];
+    {k:'parou',l:'Pararam',v:st['PAROU']||0,n:'mais de 30 dias sem vender',c:'is-red'},
+    {k:'esfriando',l:'Esfriando',v:st['ESFRIANDO']||0,n:'de 7 a 30 dias parados',c:'is-amber'},
+    {k:'ativos',l:'Ativos',v:(st['CRESCENDO']||0)+(st['ESTAVEL']||0)+(st['CAINDO']||0),n:`${st['CRESCENDO']||0} crescendo · ${st['CAINDO']||0} caindo`,c:'is-green'},
+    {k:'critico',l:'Saída ≥30%',v:crit.length,n:moneyK(crit.reduce((s,r)=>s+N(r['Gross total']),0))+' de gross',c:'is-red'}
+  ].map(k=>`<div class="card kpi ${k.c}" data-kpi="${k.k}" style="cursor:pointer" onclick="filtAfKpi('${k.k}',this)">
+    <div class="lab">${k.l}</div><div class="val">${k.v}</div><div class="note">${k.n}</div></div>`).join('');
+  const foraTxt=[
+    direto?`venda direta (sem afiliado): ${moneyK(N(direto['Gross total']))} no ano`:null,
+    'contas internas (HelpGrid, MaxWeb, Tiger Offers, gestores)'
+  ].filter(Boolean).join(' · ');
   return `<div class="grid g4">${cards}</div>
-  ${direto?`<div class="note" style="margin-top:14px"><b>Fora deste recorte:</b> venda sem afiliado (tráfego direto e recompra)
-    somou ${moneyK(N(direto['Gross total']))} no ano com ${pct(N(direto['Taxa de saida']))} de saída.
-    Não é afiliado e por isso não entra no ranking, mas continua nos totais da operação.</div>`:''}
-  <div class="note" style="margin:10px 0 4px"><b>Contas internas</b> (HelpGrid, MaxWeb, Tiger Offers, gestores) ficam fora deste ranking, mas continuam dentro dos totais da operação.</div>
-  <div class="sec">Progressão mês a mês</div>
-  <div class="ctl"><input type="search" id="qaf" placeholder="Buscar afiliado…" oninput="filtAf(this.value)">
+  <p class="cap" style="margin:10px 2px 0">Clique num card pra filtrar a tabela. <b>Fora deste ranking:</b> ${foraTxt} — continuam nos totais da operação, só não entram aqui.</p>
+  <div class="sec" style="margin-top:22px">Progressão mês a mês</div>
+  <div class="ctl">
+    <input type="search" id="qaf" placeholder="Buscar afiliado…" oninput="filtAf(this.value)">
     <button class="btn" onclick="filtAf('',this)" aria-pressed="true">Todos</button>
     <button class="btn" onclick="filtAf('__crit',this)">Só críticos</button>
-    <button class="btn" onclick="filtAf('__cresc',this)">Só crescendo</button></div>
-  <div id="afWrap">${afTable(a.sort((x,y)=>N(y['Gross total'])-N(x['Gross total'])),meses)}</div>
-  <p style="font-size:11.5px;color:var(--muted);margin-top:10px">Todos os afiliados. Use a busca para filtrar.</p>`;
+    <button class="btn" onclick="filtAf('__cresc',this)">Só crescendo</button>
+    <span id="afCount" style="margin-left:auto;font-size:11.5px;color:var(--muted)"></span>
+  </div>
+  <div id="afWrap">${afTable(a.sort((x,y)=>N(y['Gross total'])-N(x['Gross total'])),AF_MESES)}</div>`;
 };
 function afTable(rows,meses){
+  const el=$('#afCount'); if(el) el.textContent=`${rows.length} afiliado${rows.length===1?'':'s'}`;
   return table([
-    {h:'Afiliado',get:r=>String(r.Afiliado).slice(0,30)},
-    ...meses.map(m=>({h:mesLbl(m),r:1,num:1,get:r=>{const v=N(r[m]);
-      return v?`<span style="color:${v>50000?'var(--navy)':'var(--ink-2)'}">${Math.round(v/1000)}k</span>`:'<span style="color:#CBD5E1">·</span>'},
-      sort:r=>N(r[m])||0})),
-    {h:'Gross ano',r:1,num:1,get:r=>money(N(r['Gross total'])),sort:r=>N(r['Gross total'])||0,bar:r=>N(r['Gross total'])/1e6},
-    {h:'% saída',r:1,num:1,get:r=>{const v=N(r['Taxa de saida']);
-      return v==null?'—':`<b style="color:${v>=.3?'var(--red)':v>=.2?'var(--amber)':'var(--ink)'}">${pct(v)}</b>`},sort:r=>N(r['Taxa de saida'])??-1},
-    {h:'AOV Líq. White',r:1,num:1,get:r=>{
-      const w=r.aov_white; const b=r.aov_black;
-      if(!w) return '<span style="color:#CBD5E1">—</span>';
-      const tip=b?`AOV Líq. Black (jun–jul): $${b.toFixed(2)}`:'sem dado Black';
-      const delta=b?(w-b):null;
-      const dspan=delta!=null?`<span style="font-size:10px;color:${delta>0?'var(--green)':'var(--red)'}"> ${delta>0?'▲':'▼'}$${Math.abs(delta).toFixed(0)}</span>`:'';
-      return `<span class="pt" data-t="${tip}" style="cursor:default;font-family:var(--fm)">$${w.toFixed(0)}${dspan}</span>`;
-    },sort:r=>r.aov_white??-1},
-    {h:'Var. 3m',r:1,num:1,get:r=>{const v=N(r['Variacao 3m']);
-      return v==null?'—':`<span style="color:${v>0?'var(--green)':'var(--red)'}">${v>0?'+':''}${(v*100).toFixed(0)}%</span>`},sort:r=>N(r['Variacao 3m'])??-99},
-    {h:'Parado há',r:1,num:1,get:r=>N(r['Dias sem vender'])+'d',sort:r=>N(r['Dias sem vender'])||0},
+    {h:'Afiliado',sticky:1,get:r=>String(r.Afiliado).slice(0,30)},
     {h:'Status',get:r=>{const s=String(r.Status||'').split(' (')[0];
       const cls=s==='PAROU'?'t-red':s==='ESFRIANDO'?'t-amber':s==='CRESCENDO'?'t-green':s==='CAINDO'?'t-amber':'t-blue';
-      return `<span class="tag ${cls}">${s.toLowerCase()}</span>`},sort:r=>String(r.Status)}
+      return `<span class="tag ${cls}">${s.toLowerCase()}</span>`},sort:r=>String(r.Status)},
+    {h:'Parado há',r:1,num:1,get:r=>N(r['Dias sem vender'])+'d',sort:r=>N(r['Dias sem vender'])||0},
+    {h:'Var. 3m',r:1,num:1,get:r=>{const v=N(r['Variacao 3m']);
+      return v==null?'—':`<span style="color:${v>0?'var(--green)':'var(--red)'}">${v>0?'+':''}${(v*100).toFixed(0)}%</span>`},sort:r=>N(r['Variacao 3m'])??-99},
+    {h:'% saída',r:1,num:1,get:r=>{const v=N(r['Taxa de saida']);
+      return v==null?'—':`<b style="color:${v>=.3?'var(--red)':v>=.2?'var(--amber)':'var(--ink)'}">${pct(v)}</b>`},sort:r=>N(r['Taxa de saida'])??-1},
+    {h:'Gross ano',r:1,num:1,get:r=>money(N(r['Gross total'])),sort:r=>N(r['Gross total'])||0,bar:r=>N(r['Gross total'])/1e6},
+    ...meses.map(m=>({h:mesLbl(m),r:1,num:1,get:r=>{const v=N(r[m]);
+      return v?`<span style="color:${v>50000?'var(--navy)':'var(--ink-2)'}">${Math.round(v/1000)}k</span>`:'<span style="color:#CBD5E1">·</span>'},
+      sort:r=>N(r[m])||0}))
   ],rows);
 }
+function afResetActive(){
+  $$('#main .ctl .btn').forEach(b=>b.setAttribute('aria-pressed','false'));
+  $$('#main .kpi').forEach(c=>c.style.outline='');
+}
 function filtAf(q,btn){
-  if(btn){$$('#main .ctl .btn').forEach(b=>b.setAttribute('aria-pressed','false'));btn.setAttribute('aria-pressed','true')}
-  const meses=['2026-01','2026-02','2026-03','2026-04','2026-05','2026-06','2026-07','2026-08'];
-  let rows=D.afiliados.filter(r=>(N(r['Gross total'])>0||r.aov_white)&&r.Afiliado!==NAO_AFIL);
+  afResetActive();
+  if(btn)btn.setAttribute('aria-pressed','true');
+  let rows=afRows();
   if(q==='__crit')rows=rows.filter(r=>/CRITICO/.test(String(r['Alerta de qualidade']||'')));
   else if(q==='__cresc')rows=rows.filter(r=>/CRESCENDO/.test(String(r.Status||'')));
   else if(q)rows=rows.filter(r=>String(r.Afiliado).toLowerCase().includes(q.toLowerCase()));
   rows=rows.sort((x,y)=>N(y['Gross total'])-N(x['Gross total']));
-  $('#afWrap').innerHTML=afTable(rows,meses);
+  $('#afWrap').innerHTML=afTable(rows,AF_MESES);
+}
+function filtAfKpi(k,card){
+  afResetActive();
+  card.style.outline='2px solid var(--navy)';
+  let rows=afRows();
+  if(k==='parou')rows=rows.filter(r=>String(r.Status||'').split(' (')[0]==='PAROU');
+  else if(k==='esfriando')rows=rows.filter(r=>String(r.Status||'').split(' (')[0]==='ESFRIANDO');
+  else if(k==='ativos')rows=rows.filter(r=>/CRESCENDO|ESTAVEL|CAINDO/.test(String(r.Status||'')));
+  else if(k==='critico')rows=rows.filter(r=>/CRITICO/.test(String(r['Alerta de qualidade']||'')));
+  rows=rows.sort((x,y)=>N(y['Gross total'])-N(x['Gross total']));
+  $('#afWrap').innerHTML=afTable(rows,AF_MESES);
 }
 
 V.maxweb=()=>{
