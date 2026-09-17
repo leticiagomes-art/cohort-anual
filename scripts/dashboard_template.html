@@ -376,11 +376,17 @@ function celFg(v){return v!=null&&v>=.14?'#fff':'#1a2840'}
 
 function matrizEx(rows,isCB){
   const bwMap=D.cohortEx.bw||{};
+  // A ordem dos <th> aqui tem que bater exatamente com a ordem dos <td> no
+  // body abaixo (Week of, New orders, Gross, Período, week 1..12) — estava
+  // faltando o header de Gross e o de Período vinha DEPOIS das semanas no
+  // header mas ANTES delas no body, deslocando todo mundo em 2 colunas
+  // (week 1 mostrava o Gross, week 2 mostrava o badge B/W).
   const head=`<tr>
     <th class="" style="min-width:120px;position:sticky;left:0;z-index:3;background:var(--blue)">Week of</th>
     <th style="min-width:72px;text-align:right">New orders</th>
-    ${Array.from({length:12},(_,i)=>`<th style="min-width:56px;text-align:center">week ${i+1}</th>`).join('')}
-    <th style="min-width:44px;text-align:center">BW</th></tr>`;
+    <th style="min-width:72px;text-align:right">Gross</th>
+    <th style="min-width:44px;text-align:center">Período</th>
+    ${Array.from({length:12},(_,i)=>`<th style="min-width:56px;text-align:center">week ${i+1}</th>`).join('')}</tr>`;
   // data de referencia real (ultimo dia com dado), nao a data fixa de quando
   // essa matriz foi escrita — senao toda semana recente aparece "madura"
   // mesmo sem ter completado as semanas de fato.
